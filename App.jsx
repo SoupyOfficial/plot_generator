@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from "react";
-import { SYSTEM_STORY_DESIGN } from "./system_story_design";
+import { SYSTEM_STORY_DESIGN } from "./system_story_data";
 
 const SYSTEM_PURPOSE_OPTIONS = SYSTEM_STORY_DESIGN.archetypes.map(
   (a) => `${a.label} — ${a.goal}`
@@ -868,10 +868,17 @@ function validate(s) {
 }
 
 // ============================================================================
-// ANTHROPIC API CALL
+// LLM API CALLS (Anthropic + OpenAI via API key auto-detection)
 // ============================================================================
 
-async function callClaude(apiKey, selections) {
+function detectProviderFromApiKey(apiKey) {
+  const key = (apiKey || "").trim();
+  if (key.startsWith("sk-ant-")) return "anthropic";
+  if (key.startsWith("sk-proj-") || key.startsWith("sk-")) return "openai";
+  return null;
+}
+
+function buildGenerationPrompt(selections) {
   const system = `You are a story structure assistant for LitRPG / Progression Fantasy. Given a set of structural selections, produce:
 
 1. A one-paragraph STORY SEED (150–200 words) written as a back-cover blurb in plain English. It must clearly imply the locked ending without spoiling the twist, and must surface the central theme as tension.
@@ -880,6 +887,20 @@ async function callClaude(apiKey, selections) {
 Output strictly as JSON with shape: {"seed": "...", "beats": [{"name":"Opening Image","description":"..."}, ...]} and nothing else. No code fences.`;
 
   const user = `Structural selections:\n\n${JSON.stringify(selections, null, 2)}`;
+
+  return { system, user };
+}
+
+function parseStructuredJson(text) {
+  const cleaned = (text || "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+  return JSON.parse(cleaned);
+}
+
+async function callAnthropic(apiKey, selections) {
+  const { system, user } = buildGenerationPrompt(selections);
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -903,9 +924,50 @@ Output strictly as JSON with shape: {"seed": "...", "beats": [{"name":"Opening I
   }
   const data = await res.json();
   const text = data.content?.[0]?.text || "";
-  // Strip accidental code fences
-  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
-  return JSON.parse(cleaned);
+  return parseStructuredJson(text);
+}
+
+async function callOpenAI(apiKey, selections) {
+  const { system, user } = buildGenerationPrompt(selections);
+
+  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4.1-mini",
+      temperature: 0.7,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`OpenAI API error ${res.status}: ${err}`);
+  }
+
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content || "";
+  return parseStructuredJson(text);
+}
+
+async function callModel(apiKey, selections) {
+  const provider = detectProviderFromApiKey(apiKey);
+
+  if (provider === "anthropic") {
+    return callAnthropic(apiKey, selections);
+  }
+  if (provider === "openai") {
+    return callOpenAI(apiKey, selections);
+  }
+
+  throw new Error("Unknown API key format. Use an Anthropic key (sk-ant-...) or OpenAI key (sk-... / sk-proj-...).");
 }
 
 // ============================================================================
@@ -933,6 +995,9 @@ const COLOR = {
 };
 
 const FONT = "'Courier New', Courier, monospace";
+const LAST_SELECTION_ENDPOINT = "/api/last-selection";
+const DEFAULT_API_KEY_ENDPOINT = "/api/default-api-key";
+const SELECTION_HISTORY_ENDPOINT = "/api/selection-history";
 
 const S = {
   root: {
@@ -1117,6 +1182,63 @@ const S = {
     cursor: disabled ? "not-allowed" : "pointer",
     borderRadius: "2px",
   }),
+  actionRow: {
+    marginTop: "14px",
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: "10px",
+    alignItems: "stretch",
+  },
+  utilityBtn: {
+    padding: "12px 16px",
+    background: "rgba(0,0,0,0.35)",
+    border: `1px solid ${COLOR.border}`,
+    color: COLOR.purpleLight,
+    fontFamily: FONT,
+    fontSize: "12px",
+    letterSpacing: "2px",
+    textTransform: "uppercase",
+    cursor: "pointer",
+    borderRadius: "2px",
+    minWidth: "240px",
+  },
+  statusLine: {
+    marginTop: "10px",
+    fontSize: "11px",
+    color: COLOR.dim,
+    letterSpacing: "1px",
+  },
+  historyRow: {
+    marginTop: "10px",
+    display: "grid",
+    gridTemplateColumns: "1fr auto",
+    gap: "10px",
+    alignItems: "stretch",
+  },
+  historySelect: {
+    width: "100%",
+    background: "rgba(0,0,0,0.3)",
+    border: `1px solid ${COLOR.border}`,
+    color: COLOR.text,
+    padding: "10px 12px",
+    fontFamily: FONT,
+    fontSize: "12px",
+    borderRadius: "2px",
+    outline: "none",
+  },
+  restoreBtn: {
+    padding: "10px 14px",
+    background: "rgba(138,92,246,0.15)",
+    border: `1px solid ${COLOR.borderStrong}`,
+    color: COLOR.purpleLight,
+    fontFamily: FONT,
+    fontSize: "11px",
+    letterSpacing: "2px",
+    textTransform: "uppercase",
+    cursor: "pointer",
+    borderRadius: "2px",
+    minWidth: "220px",
+  },
   output: {
     marginTop: "28px",
     border: `1px solid ${COLOR.border}`,
@@ -1259,18 +1381,108 @@ function Layer({ layer, selections, setSelection, open, onToggle }) {
 export default function App() {
   const [selections, setSelections] = useState({});
   const [openLayers, setOpenLayers] = useState({ macro: true });
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("anthropic_key") || "");
+  const [apiKey, setApiKey] = useState(
+    () => localStorage.getItem("llm_api_key") || localStorage.getItem("anthropic_key") || ""
+  );
+  const [selectionFileStatus, setSelectionFileStatus] = useState("No saved selection loaded yet.");
+  const [keyStatus, setKeyStatus] = useState("STORED LOCALLY");
+  const [selectionHistory, setSelectionHistory] = useState([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [loading, setLoading] = useState(false);
   const [output, setOutput] = useState(null);
   const [error, setError] = useState(null);
   const outputRef = useRef(null);
+  const hasSelectionInitialized = useRef(false);
 
   useEffect(() => {
-    if (apiKey) localStorage.setItem("anthropic_key", apiKey);
+    if (apiKey) localStorage.setItem("llm_api_key", apiKey);
   }, [apiKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadDefaultApiKey() {
+      try {
+        const res = await fetch(DEFAULT_API_KEY_ENDPOINT);
+        const payload = await res.json();
+
+        if (!res.ok || !payload?.ok || !payload?.apiKey) return;
+
+        if (!cancelled) {
+          setApiKey(payload.apiKey);
+          setKeyStatus(`AUTO-LOADED: ${payload.source}`);
+        }
+      } catch {
+        if (!cancelled) {
+          setKeyStatus("STORED LOCALLY");
+        }
+      }
+    }
+
+    loadDefaultApiKey();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadHistory() {
+      try {
+        const res = await fetch(SELECTION_HISTORY_ENDPOINT);
+        const payload = await res.json();
+        if (!res.ok || !payload?.ok || !Array.isArray(payload?.entries)) return;
+
+        if (!cancelled) {
+          setSelectionHistory(payload.entries);
+          setSelectedHistoryId((prev) => prev || payload.entries[0]?.id || "");
+        }
+      } catch {
+        // history is optional; ignore fetch failures
+      }
+    }
+
+    loadHistory();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const setSelection = (id, v) =>
     setSelections((p) => ({ ...p, [id]: v }));
+
+  useEffect(() => {
+    if (!hasSelectionInitialized.current) {
+      hasSelectionInitialized.current = true;
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(LAST_SELECTION_ENDPOINT, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ selections }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload?.ok) {
+          throw new Error(payload?.message || "Failed to save last selection");
+        }
+        setSelectionFileStatus("Saved to last-selection.json in project root.");
+        if (Array.isArray(payload?.historyEntries)) {
+          setSelectionHistory(payload.historyEntries.slice(0, 10));
+          setSelectedHistoryId((prev) => prev || payload.historyEntries[0]?.id || "");
+        }
+      } catch (e) {
+        setSelectionFileStatus(`Save failed: ${e.message || String(e)}`);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [selections]);
 
   const toggleLayer = (id) =>
     setOpenLayers((p) => ({ ...p, [id]: !p[id] }));
@@ -1294,12 +1506,12 @@ export default function App() {
     setError(null);
     setOutput(null);
     if (!apiKey) {
-      setError("Anthropic API key required.");
+      setError("API key required (Anthropic or OpenAI).");
       return;
     }
     setLoading(true);
     try {
-      const result = await callClaude(apiKey, selections);
+      const result = await callModel(apiKey, selections);
       setOutput({ ...result, selections });
       setTimeout(() => outputRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch (e) {
@@ -1353,6 +1565,41 @@ export default function App() {
     await navigator.clipboard.writeText(buildCopyText());
   }
 
+  async function handleLoadLastSelection() {
+    try {
+      const res = await fetch(LAST_SELECTION_ENDPOINT);
+      const payload = await res.json();
+
+      if (!res.ok || !payload?.ok) {
+        throw new Error(payload?.message || "Unable to load last selection");
+      }
+
+      setSelections(payload.selections || {});
+      setSelectionFileStatus("Loaded from last-selection.json.");
+    } catch (e) {
+      setSelectionFileStatus(`Load failed: ${e.message || String(e)}`);
+    }
+  }
+
+  function formatHistoryLabel(entry, index) {
+    const ts = entry?.timestamp ? new Date(entry.timestamp) : null;
+    const readable = ts && !Number.isNaN(ts.valueOf())
+      ? ts.toLocaleString()
+      : "Unknown time";
+    return `${index + 1}. ${readable}`;
+  }
+
+  function handleRestoreHistorySnapshot() {
+    const selected = selectionHistory.find((item) => item.id === selectedHistoryId);
+    if (!selected?.selections) {
+      setSelectionFileStatus("No history snapshot selected.");
+      return;
+    }
+
+    setSelections(selected.selections);
+    setSelectionFileStatus(`Restored snapshot from ${new Date(selected.timestamp).toLocaleString()}.`);
+  }
+
   return (
     <div style={S.root}>
       <div style={S.grid} />
@@ -1369,19 +1616,19 @@ export default function App() {
           </h1>
           <p style={S.subtitle}>
             Work through layers 1–8. Each selection constrains the next. The ending is locked
-            before writing begins. Compatibility rules run live. Claude synthesizes the final
+            before writing begins. Compatibility rules run live. The model synthesizes the final
             blurb and maps your selections onto the 15 Save-the-Cat beats.
           </p>
           <div style={S.apiKeyRow}>
             <input
               type="password"
-              placeholder="anthropic API key (sk-ant-...)"
+              placeholder="API key (Anthropic sk-ant-... or OpenAI sk-... / sk-proj-...)"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               style={S.apiKeyInput}
             />
             <span style={{ fontSize: "10px", color: COLOR.dim, letterSpacing: "2px" }}>
-              STORED LOCALLY
+              {keyStatus}
             </span>
           </div>
         </div>
@@ -1422,13 +1669,47 @@ export default function App() {
           </div>
         )}
 
-        <button
-          style={S.generateBtn(!ready || loading)}
-          disabled={!ready || loading}
-          onClick={handleGenerate}
-        >
-          {loading ? "◌ GENERATING…" : "▶ GENERATE SEED"}
-        </button>
+        <div style={S.actionRow}>
+          <button
+            style={S.generateBtn(!ready || loading)}
+            disabled={!ready || loading}
+            onClick={handleGenerate}
+          >
+            {loading ? "◌ GENERATING…" : "▶ GENERATE SEED"}
+          </button>
+          <button
+            type="button"
+            onClick={handleLoadLastSelection}
+            style={S.utilityBtn}
+            disabled={loading}
+          >
+            ↺ LOAD LAST SELECTION
+          </button>
+        </div>
+        <div style={S.historyRow}>
+          <select
+            style={S.historySelect}
+            value={selectedHistoryId}
+            onChange={(e) => setSelectedHistoryId(e.target.value)}
+            disabled={selectionHistory.length === 0 || loading}
+          >
+            <option value="">— history (latest 10) —</option>
+            {selectionHistory.slice(0, 10).map((entry, i) => (
+              <option key={entry.id} value={entry.id}>
+                {formatHistoryLabel(entry, i)}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            style={S.restoreBtn}
+            onClick={handleRestoreHistorySnapshot}
+            disabled={!selectedHistoryId || loading}
+          >
+            ↺ RESTORE SELECTED
+          </button>
+        </div>
+        <div style={S.statusLine}>{selectionFileStatus}</div>
 
         {error && (
           <div style={{ ...S.warnBox, marginTop: "16px" }}>
