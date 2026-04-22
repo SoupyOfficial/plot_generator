@@ -1,5 +1,13 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { SYSTEM_STORY_DESIGN } from "./system_story_data";
+import {
+  normalizeOption,
+  optionValue,
+  buildFieldIndex,
+  conflictsForOption,
+} from "./src/lib/options.js";
+import { validateSelections } from "./src/lib/validation.js";
+import { buildGenerationPrompt } from "./src/lib/prompt.js";
 
 const SYSTEM_PURPOSE_OPTIONS = SYSTEM_STORY_DESIGN.archetypes.map(
   (a) => `${a.label} — ${a.goal}`
@@ -85,7 +93,19 @@ const LAYERS = [
           {
             id: "systemPurpose",
             label: "System Purpose (hidden archetype)",
-            options: SYSTEM_PURPOSE_OPTIONS,
+            options: SYSTEM_PURPOSE_OPTIONS.map((v) => {
+              // Entertainment archetype forbids Defier: audience wants constrain every decision
+              if (/entertainment/i.test(v)) {
+                return {
+                  value: v,
+                  description:
+                    "Audience desire is the invisible constraint on every protagonist choice.",
+                  tags: ["audience-pressure", "visible-constraint"],
+                  forbids: { archetype: "The Defier" },
+                };
+              }
+              return v;
+            }),
           },
           {
             id: "systemAlignment",
@@ -190,7 +210,18 @@ const LAYERS = [
           {
             id: "resolutionMode",
             label: "Resolution Mode",
-            options: RESOLUTION_MODE_OPTIONS,
+            options: RESOLUTION_MODE_OPTIONS.map((v) => {
+              if (/exposure/i.test(v)) {
+                return {
+                  value: v,
+                  description:
+                    "Truth about the system is the climax. Requires early breadcrumbs — incompatible with 'Single late reveal' pacing.",
+                  tags: ["mystery", "requires-breadcrumbs"],
+                  forbids: { truthRevealPacing: "Single late reveal" },
+                };
+              }
+              return v;
+            }),
           },
           {
             id: "protagonistOutcome",
@@ -388,9 +419,23 @@ const LAYERS = [
             id: "truthRevealPacing",
             label: "Truth Reveal Pacing",
             options: [
-              "Drip (one piece per arc)",
-              "Two-stage (partial early / full late)",
-              "Single late reveal",
+              {
+                value: "Drip (one piece per arc)",
+                description: "Steady escalation of revelation.",
+                tags: ["mystery-friendly"],
+              },
+              {
+                value: "Two-stage (partial early / full late)",
+                description: "Reader learns shape early, full truth late.",
+                tags: ["mystery-friendly"],
+              },
+              {
+                value: "Single late reveal",
+                description:
+                  "One big reveal at the end. This is a TWIST, not a resolution — cannot pair with an Exposure ending.",
+                tags: ["twist"],
+                forbids: { resolutionMode: "Exposure" },
+              },
               "Protagonist discovers vs told",
               "Red herrings before truth",
             ],
@@ -494,13 +539,47 @@ const LAYERS = [
             id: "archetype",
             label: "Archetype",
             options: [
-              "The Exploiter — games the system as a tool",
-              "The Investigator — driven to understand why",
-              "The Defier — resists or subverts system intent",
-              "The True Believer — aligned, then shattered",
-              "The Returner — has foreknowledge",
-              "The Builder — uses power to construct",
-              "The Accidental — dragged in unwillingly",
+              {
+                value: "The Exploiter — games the system as a tool",
+                description:
+                  "Treats the system as an optimization problem; wins by extracting value.",
+                tags: ["pragmatic", "tool-user"],
+              },
+              {
+                value: "The Investigator — driven to understand why",
+                description: "The central mystery IS the system's real purpose.",
+                tags: ["mystery", "cerebral"],
+              },
+              {
+                value: "The Defier — resists or subverts system intent",
+                description:
+                  "Autonomy is the thesis. Cannot coexist with Entertainment-purpose systems (audience pressure overrides defiance).",
+                tags: ["autonomous", "anti-system"],
+              },
+              {
+                value: "The True Believer — aligned, then shattered",
+                description: "Earns trust in the system, then discovers the lie.",
+                tags: ["faith-break"],
+              },
+              {
+                value: "The Returner — has foreknowledge",
+                description:
+                  "Knows how things 'should' go. Foreknowledge MUST compound into rivals, mystery, or red herrings — else the premise stalls.",
+                tags: ["foreknowledge", "compounding-required"],
+                requires: {
+                  knowledgeAdvantage: ["Future knowledge", "Meta knowledge"],
+                },
+              },
+              {
+                value: "The Builder — uses power to construct",
+                description: "Creates factions, crafting empires, or settlements.",
+                tags: ["constructive"],
+              },
+              {
+                value: "The Accidental — dragged in unwillingly",
+                description: "Reluctant everyman; humanity-first lens.",
+                tags: ["reluctant"],
+              },
             ],
           },
         ],
@@ -768,103 +847,12 @@ const LAYERS = [
 
 // ============================================================================
 // COMPATIBILITY RULES — from "COMPATIBILITY RULES" section of story_anatomy.docx
+// Real implementation lives in src/lib/validation.js (hybrid: data-driven
+// `forbids` on option objects + cross-cutting multi-field rules).
 // ============================================================================
 
 function validate(s) {
-  const warnings = [];
-  const g = (id) => s[id];
-  const has = (id, frag) => (g(id) || "").toLowerCase().includes(frag.toLowerCase());
-  const subplots = g("subplots") || [];
-
-  // System Purpose = Entertainment → protagonist cannot be fully autonomous
-  if (has("systemPurpose", "Entertainment") && g("archetype")?.startsWith("The Defier")) {
-    warnings.push(
-      "Entertainment + Defier: the audience's wants must constrain every decision — a fully autonomous Defier breaks the premise. Consider Investigator or Accidental, or accept visible constraint."
-    );
-  }
-
-  // Returner archetype → foreknowledge must compound
-  if (g("archetype")?.startsWith("The Returner")) {
-    if (!has("knowledgeAdvantage", "Future knowledge") && !has("knowledgeAdvantage", "Meta knowledge")) {
-      warnings.push(
-        "The Returner archetype requires foreknowledge. Select 'Future knowledge' or 'Meta knowledge' under Knowledge Advantage."
-      );
-    }
-    const hasCompounding =
-      subplots.some((x) => x.toLowerCase().includes("mystery") || x.toLowerCase().includes("rival") || x.toLowerCase().includes("competitor")) ||
-      has("antagonistType", "rival") ||
-      has("truthRevealPacing", "red herrings");
-    if (!hasCompounding) {
-      warnings.push(
-        "Returner premise: foreknowledge MUST create compounding problems (rivals, mystery reveals, herrings). Add a Mystery subplot, a Rival antagonist, or Red Herrings reveal pacing."
-      );
-    }
-  }
-
-  // Neutral system → must still create friction
-  if (has("systemAlignment", "Neutral") && has("costOfPower", "None")) {
-    warnings.push(
-      "Neutral system + No cost of power = inert system. Neutral ≠ inert. Add a cost of power or change alignment."
-    );
-  }
-
-  // Theme Knowledge vs Consequence → mystery must be engine
-  if (g("primaryTheme") === "Knowledge vs Consequence") {
-    const mysteryActive =
-      subplots.some((x) => x.toLowerCase().includes("mystery") || x.toLowerCase().includes("investigation") || x.toLowerCase().includes("conspiracy")) ||
-      has("resolutionMode", "Exposure");
-    if (!mysteryActive) {
-      warnings.push(
-        "Theme 'Knowledge vs Consequence' requires the system-origin mystery to be the engine. Add a Mystery/Investigation subplot or set Resolution Mode to Exposure."
-      );
-    }
-  }
-
-  // Open-ended series → need at least 2 anti-drift mechanisms
-  if (has("arcType", "Continuous narrative") || has("seriesCeiling", "Open-ended") || has("seriesCeiling", "No planned ending")) {
-    const ad = g("antiDrift") || [];
-    if (ad.length < 2) {
-      warnings.push(
-        "Open-ended / continuous series needs at least 2 anti-drift mechanisms locked. Add more structural locks in Layer 7.3."
-      );
-    }
-  }
-  if (has("seriesCeiling", "No planned ending") && g("primaryTheme")) {
-    // explicitly warn — thematic endpoint missing
-    if (!has("seriesCeiling", "thematic")) {
-      warnings.push(
-        "'No planned ending' is the highest drift risk. Strongly consider 'Open-ended with thematic endpoint' instead."
-      );
-    }
-  }
-
-  // Cost of Power = None → need human-cost subplot
-  if (has("costOfPower", "None")) {
-    const humanCost = subplots.some((x) =>
-      ["romance", "family", "identity", "secret", "obsession"].some((k) => x.toLowerCase().includes(k))
-    );
-    if (!humanCost) {
-      warnings.push(
-        "Costless power needs human cost instead. Add a Romance, Family, Identity Crisis, Secret, or Obsession subplot."
-      );
-    }
-  }
-
-  // Ending = Exposure → breadcrumbs required (implicitly: truth reveal pacing must not be 'Single late reveal' without setup)
-  if (has("resolutionMode", "Exposure")) {
-    if (has("truthRevealPacing", "Single late reveal")) {
-      warnings.push(
-        "Exposure ending + Single late reveal = twist, not resolution. Use Drip or Two-stage pacing so the first breadcrumb lands on page one."
-      );
-    }
-  }
-
-  // Subplot count 2–4
-  if (subplots.length && (subplots.length < 2 || subplots.length > 4)) {
-    warnings.push(`Subplot count is ${subplots.length}. Pick 2–4 for a single book.`);
-  }
-
-  return warnings;
+  return validateSelections(s, LAYERS);
 }
 
 // ============================================================================
@@ -878,17 +866,16 @@ function detectProviderFromApiKey(apiKey) {
   return null;
 }
 
-function buildGenerationPrompt(selections) {
-  const system = `You are a story structure assistant for LitRPG / Progression Fantasy. Given a set of structural selections, produce:
-
-1. A one-paragraph STORY SEED (150–200 words) written as a back-cover blurb in plain English. It must clearly imply the locked ending without spoiling the twist, and must surface the central theme as tension.
-2. A BEAT MAP: map all 15 Save the Cat beats (Opening Image, Theme Stated, Setup, Catalyst, Debate, Break into Act Two, B Story, Fun and Games, Midpoint, Bad Guys Close In, All Is Lost, Dark Night of the Soul, Break into Act Three, Finale, Final Image) to concrete, specific moments derived from the user's selections. One or two sentences per beat.
-
-Output strictly as JSON with shape: {"seed": "...", "beats": [{"name":"Opening Image","description":"..."}, ...]} and nothing else. No code fences.`;
-
-  const user = `Structural selections:\n\n${JSON.stringify(selections, null, 2)}`;
-
-  return { system, user };
+// `buildGenerationPrompt` now lives in src/lib/prompt.js. We build a per-call
+// context object so we can pass selections + warnings + user notes together.
+function buildPromptContext(selections, activeWarnings, userNotes) {
+  return buildGenerationPrompt({
+    layers: LAYERS,
+    selections,
+    systemDesign: SYSTEM_STORY_DESIGN,
+    activeWarnings,
+    userNotes,
+  });
 }
 
 function parseStructuredJson(text) {
@@ -899,8 +886,12 @@ function parseStructuredJson(text) {
   return JSON.parse(cleaned);
 }
 
-async function callAnthropic(apiKey, selections) {
-  const { system, user } = buildGenerationPrompt(selections);
+async function callAnthropic(apiKey, selections, extra = {}) {
+  const { system, user } = buildPromptContext(
+    selections,
+    extra.activeWarnings,
+    extra.userNotes
+  );
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -927,8 +918,12 @@ async function callAnthropic(apiKey, selections) {
   return parseStructuredJson(text);
 }
 
-async function callOpenAI(apiKey, selections) {
-  const { system, user } = buildGenerationPrompt(selections);
+async function callOpenAI(apiKey, selections, extra = {}) {
+  const { system, user } = buildPromptContext(
+    selections,
+    extra.activeWarnings,
+    extra.userNotes
+  );
 
   const res = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
@@ -957,14 +952,14 @@ async function callOpenAI(apiKey, selections) {
   return parseStructuredJson(text);
 }
 
-async function callModel(apiKey, selections) {
+async function callModel(apiKey, selections, extra = {}) {
   const provider = detectProviderFromApiKey(apiKey);
 
   if (provider === "anthropic") {
-    return callAnthropic(apiKey, selections);
+    return callAnthropic(apiKey, selections, extra);
   }
   if (provider === "openai") {
-    return callOpenAI(apiKey, selections);
+    return callOpenAI(apiKey, selections, extra);
   }
 
   throw new Error("Unknown API key format. Use an Anthropic key (sk-ant-...) or OpenAI key (sk-... / sk-proj-...).");
@@ -1278,13 +1273,51 @@ const S = {
     borderRadius: "2px",
     outline: "none",
   },
+  notesTextarea: {
+    width: "100%",
+    background: "rgba(0,0,0,0.3)",
+    border: `1px solid ${COLOR.border}`,
+    color: COLOR.text,
+    padding: "10px 12px",
+    fontFamily: FONT,
+    fontSize: "12px",
+    borderRadius: "2px",
+    outline: "none",
+    minHeight: "90px",
+    resize: "vertical",
+    boxSizing: "border-box",
+  },
 };
 
 // ============================================================================
 // COMPONENTS
 // ============================================================================
 
-function Field({ comp, value, onChange }) {
+function Field({ comp, value, onChange, fieldIndex, selections }) {
+  // Normalize mixed string|object options up front so the rest of this
+  // component doesn't care which form the data was declared in.
+  const normalized = (comp.options || [])
+    .map(normalizeOption)
+    .filter(Boolean);
+
+  // Compute per-option conflict state against current selections. If non-empty,
+  // the option is rendered as disabled with a tooltip explaining the conflict.
+  const conflictMap = new Map();
+  for (const opt of normalized) {
+    const conflicts = fieldIndex
+      ? conflictsForOption(fieldIndex, selections || {}, comp.id, opt)
+      : [];
+    conflictMap.set(opt.value, conflicts);
+  }
+
+  const conflictTooltip = (conflicts) =>
+    conflicts
+      .map(
+        (c) =>
+          `Incompatible with ${c.otherField} = "${c.currentValue}"`
+      )
+      .join(" • ");
+
   if (comp.multi) {
     const set = new Set(value || []);
     return (
@@ -1293,24 +1326,37 @@ function Field({ comp, value, onChange }) {
           {comp.label} <span style={{ color: COLOR.dim }}>({set.size} selected{comp.min ? `, min ${comp.min}` : ""}{comp.max ? `, max ${comp.max}` : ""})</span>
         </label>
         <div style={S.multiGrid}>
-          {comp.options.map((o) => {
-            const on = set.has(o);
+          {normalized.map((o) => {
+            const on = set.has(o.value);
+            const conflicts = conflictMap.get(o.value) || [];
+            const disabled = !on && conflicts.length > 0;
             return (
               <button
-                key={o}
+                key={o.value}
                 type="button"
+                disabled={disabled}
+                title={
+                  disabled
+                    ? conflictTooltip(conflicts)
+                    : o.description || undefined
+                }
                 onClick={() => {
+                  if (disabled) return;
                   const next = new Set(set);
-                  if (on) next.delete(o);
+                  if (on) next.delete(o.value);
                   else {
                     if (comp.max && next.size >= comp.max) return;
-                    next.add(o);
+                    next.add(o.value);
                   }
                   onChange([...next]);
                 }}
-                style={S.chip(on)}
+                style={{
+                  ...S.chip(on),
+                  opacity: disabled ? 0.35 : 1,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                }}
               >
-                {on ? "▣ " : "▢ "} {o}
+                {on ? "▣ " : disabled ? "⊘ " : "▢ "} {o.value}
               </button>
             );
           })}
@@ -1318,24 +1364,49 @@ function Field({ comp, value, onChange }) {
       </div>
     );
   }
+  // Single-select: keep <select> UI. Forbidden options are `disabled` attribute.
+  const currentOpt = normalized.find((o) => o.value === value);
   return (
     <div>
-      <label style={S.fieldLabel}>{comp.label}</label>
+      <label style={S.fieldLabel} title={currentOpt?.description || undefined}>
+        {comp.label}
+        {currentOpt?.description && (
+          <span style={{ marginLeft: 8, color: COLOR.dim, textTransform: "none", letterSpacing: 0 }}>
+            — {currentOpt.description}
+          </span>
+        )}
+      </label>
       <select
         style={S.select}
         value={value || ""}
         onChange={(e) => onChange(e.target.value)}
       >
         <option value="">— select —</option>
-        {comp.options.map((o) => (
-          <option key={o} value={o}>{o}</option>
-        ))}
+        {normalized.map((o) => {
+          const conflicts = conflictMap.get(o.value) || [];
+          const disabled = o.value !== value && conflicts.length > 0;
+          return (
+            <option
+              key={o.value}
+              value={o.value}
+              disabled={disabled}
+              title={
+                disabled
+                  ? conflictTooltip(conflicts)
+                  : o.description || undefined
+              }
+            >
+              {disabled ? "⊘ " : ""}{o.value}
+              {disabled ? "  (conflicts)" : ""}
+            </option>
+          );
+        })}
       </select>
     </div>
   );
 }
 
-function Layer({ layer, selections, setSelection, open, onToggle }) {
+function Layer({ layer, selections, setSelection, open, onToggle, fieldIndex }) {
   return (
     <div style={S.layerCard}>
       <div style={S.layerHeader} onClick={onToggle}>
@@ -1364,6 +1435,8 @@ function Layer({ layer, selections, setSelection, open, onToggle }) {
                   comp={c}
                   value={selections[c.id]}
                   onChange={(v) => setSelection(c.id, v)}
+                  fieldIndex={fieldIndex}
+                  selections={selections}
                 />
               ))}
             </div>
@@ -1380,6 +1453,7 @@ function Layer({ layer, selections, setSelection, open, onToggle }) {
 
 export default function App() {
   const [selections, setSelections] = useState({});
+  const [userNotes, setUserNotes] = useState(() => localStorage.getItem("user_notes") || "");
   const [openLayers, setOpenLayers] = useState({ macro: true });
   const [apiKey, setApiKey] = useState(
     () => localStorage.getItem("llm_api_key") || localStorage.getItem("anthropic_key") || ""
@@ -1393,6 +1467,13 @@ export default function App() {
   const [error, setError] = useState(null);
   const outputRef = useRef(null);
   const hasSelectionInitialized = useRef(false);
+
+  // Memoized field index; used by Field to compute per-option conflict state.
+  const fieldIndex = useMemo(() => buildFieldIndex(LAYERS), []);
+
+  useEffect(() => {
+    localStorage.setItem("user_notes", userNotes || "");
+  }, [userNotes]);
 
   useEffect(() => {
     if (apiKey) localStorage.setItem("llm_api_key", apiKey);
@@ -1471,7 +1552,17 @@ export default function App() {
         if (!res.ok || !payload?.ok) {
           throw new Error(payload?.message || "Failed to save last selection");
         }
-        setSelectionFileStatus("Saved to last-selection.json in project root.");
+
+        let status = "Saved to last-selection.json in project root.";
+        if (payload?.historyUpdated === false) {
+          if (payload?.skippedReason === "empty") {
+            status += " Skipped history snapshot (empty selection).";
+          } else if (payload?.skippedReason === "duplicate") {
+            status += " Skipped history snapshot (unchanged from latest).";
+          }
+        }
+        setSelectionFileStatus(status);
+
         if (Array.isArray(payload?.historyEntries)) {
           setSelectionHistory(payload.historyEntries.slice(0, 10));
           setSelectedHistoryId((prev) => prev || payload.historyEntries[0]?.id || "");
@@ -1511,7 +1602,10 @@ export default function App() {
     }
     setLoading(true);
     try {
-      const result = await callModel(apiKey, selections);
+      const result = await callModel(apiKey, selections, {
+        activeWarnings: warnings,
+        userNotes,
+      });
       setOutput({ ...result, selections });
       setTimeout(() => outputRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch (e) {
@@ -1641,6 +1735,7 @@ export default function App() {
             setSelection={setSelection}
             open={!!openLayers[layer.id]}
             onToggle={() => toggleLayer(layer.id)}
+            fieldIndex={fieldIndex}
           />
         ))}
 
@@ -1668,6 +1763,18 @@ export default function App() {
             )}
           </div>
         )}
+
+        <div style={{ marginTop: "24px" }}>
+          <label style={{ ...S.fieldLabel, marginTop: 0 }}>
+            User Notes (optional) — passed verbatim to the model
+          </label>
+          <textarea
+            style={S.notesTextarea}
+            value={userNotes}
+            onChange={(e) => setUserNotes(e.target.value)}
+            placeholder="Character names, settings, imagery, things to avoid, tone references… (stored locally in your browser)"
+          />
+        </div>
 
         <div style={S.actionRow}>
           <button

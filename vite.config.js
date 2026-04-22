@@ -9,6 +9,37 @@ const DEFAULT_API_KEY_ENDPOINT = "/api/default-api-key";
 const SELECTION_HISTORY_ENDPOINT = "/api/selection-history";
 const HISTORY_LIMIT = 10;
 
+const hasMeaningfulValue = (value) => {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasMeaningfulValue);
+  }
+  return value !== null && value !== undefined;
+};
+
+const hasMeaningfulSelections = (selections) => {
+  if (!selections || typeof selections !== "object" || Array.isArray(selections)) return false;
+  return Object.values(selections).some(hasMeaningfulValue);
+};
+
+const toCanonicalJson = (value) => {
+  const normalize = (v) => {
+    if (Array.isArray(v)) return v.map(normalize);
+    if (v && typeof v === "object") {
+      return Object.keys(v)
+        .sort()
+        .reduce((acc, key) => {
+          acc[key] = normalize(v[key]);
+          return acc;
+        }, {});
+    }
+    return v;
+  };
+
+  return JSON.stringify(normalize(value));
+};
+
 function selectionPersistencePlugin() {
   let projectRoot = process.cwd();
 
@@ -45,6 +76,24 @@ function selectionPersistencePlugin() {
 
       const appendHistoryEntry = async (selections) => {
         const existing = await readHistoryEntries();
+
+        if (!hasMeaningfulSelections(selections)) {
+          return {
+            historyEntries: existing.slice(0, HISTORY_LIMIT),
+            historyUpdated: false,
+            skippedReason: "empty",
+          };
+        }
+
+        const latest = existing[0];
+        if (latest?.selections && toCanonicalJson(latest.selections) === toCanonicalJson(selections)) {
+          return {
+            historyEntries: existing.slice(0, HISTORY_LIMIT),
+            historyUpdated: false,
+            skippedReason: "duplicate",
+          };
+        }
+
         const next = [
           {
             id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
@@ -55,7 +104,11 @@ function selectionPersistencePlugin() {
         ].slice(0, HISTORY_LIMIT);
 
         await fs.writeFile(historyFilePath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
-        return next;
+        return {
+          historyEntries: next,
+          historyUpdated: true,
+          skippedReason: null,
+        };
       };
 
       if (pathname === DEFAULT_API_KEY_ENDPOINT) {
@@ -129,11 +182,17 @@ function selectionPersistencePlugin() {
           }
 
           await fs.writeFile(filePath, `${JSON.stringify(selections, null, 2)}\n`, "utf8");
-          const historyEntries = await appendHistoryEntry(selections);
+          const {
+            historyEntries,
+            historyUpdated,
+            skippedReason,
+          } = await appendHistoryEntry(selections);
           return sendJson(res, 200, {
             ok: true,
             file: LAST_SELECTION_FILE,
             historyEntries,
+            historyUpdated,
+            skippedReason,
             historyFile: SELECTION_HISTORY_FILE,
           });
         }
