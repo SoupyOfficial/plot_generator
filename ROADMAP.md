@@ -225,13 +225,23 @@ Turns the tool from "fill 30 fields then generate" into "pick your pillars, coll
 
 ---
 
-## Open Questions / Decisions to Make
+## Decisions (Resolved)
 
-- [ ] **Option schema:** do we store descriptions inline in `App.jsx` or split into `options.data.js`? Leaning toward split — the file is already huge.
-- [ ] **Validation severity:** do we keep `forbids` as a hard block (can't submit) or stay with warnings? Recommend: hard block for `forbids`, warnings for `implies` mismatches.
-- [ ] **LLM option caching:** cache by (fieldId, hash-of-selections) to avoid re-calling for the same context. Worth it?
-- [ ] **Freeform user notes:** single textarea, or per-layer notes? Start with one, evaluate.
-- [ ] **Provider strategy for option expansion:** cheapest fast model (gpt-4.1-mini / claude-haiku)? Or same model as main generation for consistency?
+- ✅ **Subgenre is required**, with a **"Genre-agnostic"** option as bypass.
+- ✅ **Preset switching behavior:** when subgenre changes after preset load, use **confirm + replace conflicting fields**.
+- ✅ **Coherence indicator:** **qualitative labels** with **optional numeric tooltip**.
+- ✅ **Tag governance:** **strict allow-list in `tags.js`** (new tags added intentionally via code review).
+- ✅ **"Fill the rest with me" v1:** **single-shot** completion first.
+- ✅ **Archetype split migration:** **heuristic auto-migrate + review warning** for legacy seeds.
+- ✅ **Progression ladder scope:** **3–4 presets + custom rungs** in initial implementation.
+- ✅ **Beat reroll scope (v1):** prioritize **range reroll** (e.g., keep beats 1–5, redo 6–15) over single-beat-only.
+
+### Deferred implementation choices (next pass)
+
+- ⏳ **Validation severity:** keep current warning behavior for now; revisit hard-blocking once more option metadata has `forbids` coverage.
+- ⏳ **LLM option caching:** evaluate after telemetry from first `✨ Suggest more` rollout.
+- ⏳ **Freeform notes granularity:** keep one global textarea in v1.
+- ⏳ **Expansion model/provider strategy:** start with cost-efficient fast model; revisit if option quality is inconsistent.
 
 ---
 

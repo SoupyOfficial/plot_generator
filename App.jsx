@@ -8,6 +8,17 @@ import {
 } from "./src/lib/options.js";
 import { validateSelections } from "./src/lib/validation.js";
 import { buildGenerationPrompt } from "./src/lib/prompt.js";
+import { detectHighValueCombos } from "./src/lib/prompt.js";
+import { computeCoherence } from "./src/lib/coherence.js";
+import { PRESETS, findPreset } from "./src/data/presets.js";
+import { applyPreset, conflictsForPreset } from "./src/lib/presets.js";
+import { assertKnownTags } from "./src/data/tags.js";
+import {
+  buildFillPrompt,
+  parseFillResponse,
+  applyFillResult,
+  collectEmptyFields,
+} from "./src/lib/fillRest.js";
 
 const SYSTEM_PURPOSE_OPTIONS = SYSTEM_STORY_DESIGN.archetypes.map(
   (a) => `${a.label} — ${a.goal}`
@@ -35,6 +46,27 @@ const LAYERS = [
         id: "world",
         title: "1.1 World / Setting",
         components: [
+          {
+            id: "subgenre",
+            label: "Subgenre (declare the shelf)",
+            options: [
+              {
+                value: "Genre-agnostic",
+                description: "No subgenre commitment; let the other layers decide the shelf.",
+              },
+              "Classical progression fantasy (cultivation / ranks)",
+              "LitRPG (visible stats & levels)",
+              "System apocalypse",
+              "Portal / isekai",
+              "Dungeon core",
+              "Cozy LitRPG / low-stakes",
+              "Regression / time loop",
+              "Xianxia / wuxia",
+              "Magical academy",
+              "Superhero progression",
+              "Post-apocalyptic survival",
+            ],
+          },
           {
             id: "integrationType",
             label: "Integration Type",
@@ -296,6 +328,39 @@ const LAYERS = [
               "Creation / building",
               "Hybrid",
             ],
+          },
+          {
+            id: "progressionRungs",
+            label: "Progression Ladder (optional)",
+            options: [
+              {
+                value: "Cultivation — 9 named realms",
+                description:
+                  "Body Tempering → Foundation → Core → Nascent Soul → Spirit Severing → Dao Seeking → Immortal → Ascendant → Transcendent.",
+              },
+              {
+                value: "LitRPG — numeric levels (1–100)",
+                description: "Tier gates every 10 levels; stats allocatable on level up.",
+              },
+              {
+                value: "Metal tiers — Bronze → Silver → Gold → Diamond → Legendary",
+                description: "Clear visible tier walls; each tier is a mini-arc.",
+              },
+              {
+                value: "Academy — year-based (Freshman → Senior → Graduate)",
+                description: "School structure doubles as progression rhythm.",
+              },
+              {
+                value: "Custom — define your own rungs below",
+                description: "Use the 'Custom rungs' field to list them in order.",
+              },
+            ],
+          },
+          {
+            id: "progressionCustomRungs",
+            label: "Custom rungs (optional) — comma or arrow separated, in order",
+            freeform: true,
+            placeholder: "e.g. Initiate → Apprentice → Adept → Master → Grandmaster",
           },
         ],
       },
@@ -582,6 +647,22 @@ const LAYERS = [
               },
             ],
           },
+          {
+            id: "archetypeFlavor",
+            label: "Personality Flavor (optional — overlay on the role)",
+            options: [
+              "Stoic operator",
+              "Charming rogue",
+              "Idealist / true-hearted",
+              "Cynic with a soft center",
+              "Scholar / obsessive learner",
+              "Warrior-poet",
+              "Wry deadpan",
+              "Zealot / driven by conviction",
+              "Reluctant everyman",
+              "Ruthless pragmatist",
+            ],
+          },
         ],
       },
       {
@@ -667,8 +748,28 @@ const LAYERS = [
         title: "6.1 Tone",
         components: [
           {
+            id: "toneSeriousness",
+            label: "Seriousness axis",
+            options: [
+              "Played straight (serious)",
+              "Wry / dry-witty",
+              "Comedic with real stakes",
+              "Full comedy / farce",
+            ],
+          },
+          {
+            id: "toneOptimism",
+            label: "Optimism axis",
+            options: [
+              "Hopeful / bright",
+              "Bittersweet",
+              "Grim but not nihilistic",
+              "Nihilistic / bleak",
+            ],
+          },
+          {
             id: "primaryTone",
-            label: "Primary Tone",
+            label: "Primary Tone (dominant flavor)",
             options: [
               "Grim / serious",
               "Comedic",
@@ -965,6 +1066,54 @@ async function callModel(apiKey, selections, extra = {}) {
   throw new Error("Unknown API key format. Use an Anthropic key (sk-ant-...) or OpenAI key (sk-... / sk-proj-...).");
 }
 
+// --- FILL-THE-REST: raw text round-trip (no JSON parsing of the main schema) -
+
+async function callModelRawText(apiKey, { system, user }) {
+  const provider = detectProviderFromApiKey(apiKey);
+  if (provider === "anthropic") {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1500,
+        system,
+        messages: [{ role: "user", content: user }],
+      }),
+    });
+    if (!res.ok) throw new Error(`Claude API error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    return data.content?.[0]?.text || "";
+  }
+  if (provider === "openai") {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4.1-mini",
+        temperature: 0.7,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`OpenAI API error ${res.status}: ${await res.text()}`);
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content || "";
+  }
+  throw new Error("Unknown API key format.");
+}
+
 // ============================================================================
 // STYLES
 // ============================================================================
@@ -993,6 +1142,99 @@ const FONT = "'Courier New', Courier, monospace";
 const LAST_SELECTION_ENDPOINT = "/api/last-selection";
 const DEFAULT_API_KEY_ENDPOINT = "/api/default-api-key";
 const SELECTION_HISTORY_ENDPOINT = "/api/selection-history";
+const HISTORY_LIMIT = 10;
+const LOCAL_LAST_SELECTION_KEY = "plot_generator:last-selection";
+const LOCAL_SELECTION_HISTORY_KEY = "plot_generator:selection-history";
+const IS_STATIC_HOSTING =
+  typeof window !== "undefined" &&
+  /(?:github|gitlab)\.io$/i.test(window.location.hostname);
+
+const hasMeaningfulValue = (value) => {
+  if (typeof value === "string") return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") {
+    return Object.values(value).some(hasMeaningfulValue);
+  }
+  return value !== null && value !== undefined;
+};
+
+const hasMeaningfulSelections = (nextSelections) => {
+  if (!nextSelections || typeof nextSelections !== "object" || Array.isArray(nextSelections)) return false;
+  return Object.values(nextSelections).some(hasMeaningfulValue);
+};
+
+const toCanonicalJson = (value) => {
+  const normalize = (v) => {
+    if (Array.isArray(v)) return v.map(normalize);
+    if (v && typeof v === "object") {
+      return Object.keys(v)
+        .sort()
+        .reduce((acc, key) => {
+          acc[key] = normalize(v[key]);
+          return acc;
+        }, {});
+    }
+    return v;
+  };
+
+  return JSON.stringify(normalize(value));
+};
+
+const readLocalHistoryEntries = () => {
+  try {
+    const raw = localStorage.getItem(LOCAL_SELECTION_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === "object") : [];
+  } catch {
+    return [];
+  }
+};
+
+const writeLocalHistoryEntries = (entries) => {
+  try {
+    localStorage.setItem(LOCAL_SELECTION_HISTORY_KEY, JSON.stringify(entries.slice(0, HISTORY_LIMIT)));
+  } catch {
+    // ignore storage failures (quota/private mode)
+  }
+};
+
+const appendLocalHistoryEntry = (nextSelections) => {
+  const existing = readLocalHistoryEntries();
+
+  if (!hasMeaningfulSelections(nextSelections)) {
+    return {
+      historyEntries: existing.slice(0, HISTORY_LIMIT),
+      historyUpdated: false,
+      skippedReason: "empty",
+    };
+  }
+
+  const latest = existing[0];
+  if (latest?.selections && toCanonicalJson(latest.selections) === toCanonicalJson(nextSelections)) {
+    return {
+      historyEntries: existing.slice(0, HISTORY_LIMIT),
+      historyUpdated: false,
+      skippedReason: "duplicate",
+    };
+  }
+
+  const updated = [
+    {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      timestamp: new Date().toISOString(),
+      selections: nextSelections,
+    },
+    ...existing,
+  ].slice(0, HISTORY_LIMIT);
+
+  writeLocalHistoryEntries(updated);
+
+  return {
+    historyEntries: updated,
+    historyUpdated: true,
+    skippedReason: null,
+  };
+};
 
 const S = {
   root: {
@@ -1287,6 +1529,18 @@ const S = {
     resize: "vertical",
     boxSizing: "border-box",
   },
+  freeformInput: {
+    width: "100%",
+    background: "rgba(0,0,0,0.3)",
+    border: `1px solid ${COLOR.border}`,
+    color: COLOR.text,
+    padding: "10px 12px",
+    fontFamily: FONT,
+    fontSize: "12px",
+    borderRadius: "2px",
+    outline: "none",
+    boxSizing: "border-box",
+  },
 };
 
 // ============================================================================
@@ -1294,6 +1548,22 @@ const S = {
 // ============================================================================
 
 function Field({ comp, value, onChange, fieldIndex, selections }) {
+  // Freeform text input — no options, just captures a string.
+  if (comp.freeform) {
+    return (
+      <div>
+        <label style={S.fieldLabel}>{comp.label}</label>
+        <input
+          type="text"
+          style={S.freeformInput}
+          value={value || ""}
+          placeholder={comp.placeholder || ""}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+    );
+  }
+
   // Normalize mixed string|object options up front so the rest of this
   // component doesn't care which form the data was declared in.
   const normalized = (comp.options || [])
@@ -1406,6 +1676,71 @@ function Field({ comp, value, onChange, fieldIndex, selections }) {
   );
 }
 
+function CoherenceBadge({ coherence }) {
+  if (!coherence) return null;
+  const colorByLabel = {
+    High: COLOR.purple,
+    Solid: COLOR.purpleSoft,
+    Mixed: "#d4a843",
+    Fractured: "#c45c5c",
+  };
+  const accent = colorByLabel[coherence.label] || COLOR.purpleSoft;
+  const b = coherence.breakdown;
+  const tooltip =
+    `Score: ${coherence.score}/100\n` +
+    `Completeness: ${b.completeness} (${b.filled}/${b.requiredTotal} required, subplots ${b.subplotOk ? "OK" : "out-of-range"})\n` +
+    `Compatibility: ${b.compatibility} (${b.warnings} warning${b.warnings === 1 ? "" : "s"})\n` +
+    `Cohesion bonus: +${b.cohesionBonus} (${b.highValueCombos} high-value combo${b.highValueCombos === 1 ? "" : "s"})`;
+  return (
+    <div
+      title={tooltip}
+      style={{
+        marginTop: "18px",
+        padding: "12px 16px",
+        border: `1px solid ${accent}`,
+        background: "rgba(0,0,0,0.3)",
+        borderRadius: "3px",
+        display: "flex",
+        alignItems: "center",
+        gap: "16px",
+      }}
+    >
+      <div
+        style={{
+          fontSize: "10px",
+          color: accent,
+          letterSpacing: "3px",
+        }}
+      >
+        // COHERENCE
+      </div>
+      <div
+        style={{
+          fontSize: "14px",
+          color: accent,
+          letterSpacing: "2px",
+          textTransform: "uppercase",
+          fontWeight: 600,
+        }}
+      >
+        {coherence.label}
+      </div>
+      <div style={{ fontSize: "12px", color: COLOR.dim, flex: 1 }}>
+        {coherence.blurb}
+      </div>
+      <div
+        style={{
+          fontSize: "10px",
+          color: COLOR.dim,
+          letterSpacing: "1px",
+        }}
+      >
+        hover for details
+      </div>
+    </div>
+  );
+}
+
 function Layer({ layer, selections, setSelection, open, onToggle, fieldIndex }) {
   return (
     <div style={S.layerCard}>
@@ -1453,6 +1788,8 @@ function Layer({ layer, selections, setSelection, open, onToggle, fieldIndex }) 
 
 export default function App() {
   const [selections, setSelections] = useState({});
+  const [selectedPresetId, setSelectedPresetId] = useState("");
+  const [presetStatus, setPresetStatus] = useState("");
   const [userNotes, setUserNotes] = useState(() => localStorage.getItem("user_notes") || "");
   const [openLayers, setOpenLayers] = useState({ macro: true });
   const [apiKey, setApiKey] = useState(
@@ -1465,11 +1802,18 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [output, setOutput] = useState(null);
   const [error, setError] = useState(null);
+  const [fillLoading, setFillLoading] = useState(false);
+  const [fillStatus, setFillStatus] = useState("");
   const outputRef = useRef(null);
   const hasSelectionInitialized = useRef(false);
 
   // Memoized field index; used by Field to compute per-option conflict state.
   const fieldIndex = useMemo(() => buildFieldIndex(LAYERS), []);
+
+  // Dev-time: warn if any option carries a tag not in the allow-list.
+  useEffect(() => {
+    assertKnownTags(LAYERS);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("user_notes", userNotes || "");
@@ -1481,6 +1825,13 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+
+    if (IS_STATIC_HOSTING) {
+      setKeyStatus("STORED LOCALLY (STATIC HOSTING)");
+      return () => {
+        cancelled = true;
+      };
+    }
 
     async function loadDefaultApiKey() {
       try {
@@ -1509,6 +1860,17 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
+
+    if (IS_STATIC_HOSTING) {
+      const entries = readLocalHistoryEntries();
+      if (!cancelled) {
+        setSelectionHistory(entries.slice(0, HISTORY_LIMIT));
+        setSelectedHistoryId((prev) => prev || entries[0]?.id || "");
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
 
     async function loadHistory() {
       try {
@@ -1543,6 +1905,25 @@ export default function App() {
 
     const timer = setTimeout(async () => {
       try {
+        if (IS_STATIC_HOSTING) {
+          localStorage.setItem(LOCAL_LAST_SELECTION_KEY, JSON.stringify(selections));
+
+          const { historyEntries, historyUpdated, skippedReason } = appendLocalHistoryEntry(selections);
+
+          let status = "Saved locally (static hosting mode).";
+          if (historyUpdated === false) {
+            if (skippedReason === "empty") {
+              status += " Skipped history snapshot (empty selection).";
+            } else if (skippedReason === "duplicate") {
+              status += " Skipped history snapshot (unchanged from latest).";
+            }
+          }
+          setSelectionFileStatus(status);
+          setSelectionHistory(historyEntries.slice(0, HISTORY_LIMIT));
+          setSelectedHistoryId((prev) => prev || historyEntries[0]?.id || "");
+          return;
+        }
+
         const res = await fetch(LAST_SELECTION_ENDPOINT, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -1564,7 +1945,7 @@ export default function App() {
         setSelectionFileStatus(status);
 
         if (Array.isArray(payload?.historyEntries)) {
-          setSelectionHistory(payload.historyEntries.slice(0, 10));
+          setSelectionHistory(payload.historyEntries.slice(0, HISTORY_LIMIT));
           setSelectedHistoryId((prev) => prev || payload.historyEntries[0]?.id || "");
         }
       } catch (e) {
@@ -1578,10 +1959,60 @@ export default function App() {
   const toggleLayer = (id) =>
     setOpenLayers((p) => ({ ...p, [id]: !p[id] }));
 
+  function handleApplyPreset() {
+    if (!selectedPresetId) return;
+    const preset = findPreset(selectedPresetId);
+    if (!preset) {
+      setPresetStatus(`Unknown preset: ${selectedPresetId}`);
+      return;
+    }
+
+    // Blank preset = reset. Confirm if user already has any selections.
+    if (preset.id === "blank") {
+      const hasAny = Object.values(selections).some(
+        (v) => v != null && v !== "" && !(Array.isArray(v) && v.length === 0)
+      );
+      if (hasAny) {
+        const ok = window.confirm(
+          "Clear all current selections and start from a blank slate?"
+        );
+        if (!ok) {
+          setPresetStatus("Preset apply canceled.");
+          return;
+        }
+      }
+      setSelections({});
+      setPresetStatus(`Cleared selections.`);
+      return;
+    }
+
+    const conflicts = conflictsForPreset(selections, preset);
+    if (conflicts.length > 0) {
+      const lines = conflicts
+        .map((c) => `  • ${c.fieldId}: "${c.current}" → "${c.next}"`)
+        .join("\n");
+      const ok = window.confirm(
+        `Applying "${preset.label}" will replace ${conflicts.length} conflicting selection(s):\n\n${lines}\n\nProceed?`
+      );
+      if (!ok) {
+        setPresetStatus("Preset apply canceled.");
+        return;
+      }
+    }
+
+    setSelections((prev) => applyPreset(prev, preset, { replaceConflicting: true }));
+    const changed = Object.keys(preset.selections).length;
+    setPresetStatus(
+      `Applied "${preset.label}" (${changed} field${changed === 1 ? "" : "s"} set).`
+    );
+  }
+
   const warnings = useMemo(() => validate(selections), [selections]);
 
   // Required non-multi fields for "ready to generate"
+  // Required non-multi fields for "ready to generate"
   const requiredIds = [
+    "subgenre",
     "integrationType", "worldScale", "techLevel",
     "systemVisibility", "systemOrigin", "systemPurpose", "systemAlignment", "systemCeiling",
     "entryCondition", "startingState", "knowledgeAdvantage",
@@ -1592,6 +2023,19 @@ export default function App() {
   const missing = requiredIds.filter((id) => !selections[id]);
   const subplotOk = (selections.subplots || []).length >= 2 && (selections.subplots || []).length <= 4;
   const ready = missing.length === 0 && subplotOk;
+
+  // Coherence rating — qualitative label primary, numeric in tooltip.
+  const coherence = useMemo(
+    () =>
+      computeCoherence({
+        requiredIds,
+        selections,
+        warnings,
+        subplotCount: (selections.subplots || []).length,
+        highValueCombos: detectHighValueCombos(SYSTEM_STORY_DESIGN, selections).length,
+      }),
+    [requiredIds, selections, warnings]
+  );
 
   async function handleGenerate() {
     setError(null);
@@ -1612,6 +2056,47 @@ export default function App() {
       setError(e.message || String(e));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleFillRest() {
+    setFillStatus("");
+    if (!apiKey) {
+      setFillStatus("API key required to fill the rest.");
+      return;
+    }
+    const empties = collectEmptyFields(LAYERS, selections);
+    if (!empties.length) {
+      setFillStatus("Nothing to fill — all single-select fields already set.");
+      return;
+    }
+    setFillLoading(true);
+    try {
+      const { system, user } = buildFillPrompt({
+        layers: LAYERS,
+        selections,
+        userNotes,
+      });
+      const text = await callModelRawText(apiKey, { system, user });
+      const { accepted, rejected } = parseFillResponse(text, LAYERS);
+      const acceptedCount = Object.keys(accepted).length;
+      if (!acceptedCount) {
+        setFillStatus(
+          `Fill returned no valid suggestions (${rejected.length} rejected). Try again or fill manually.`
+        );
+        return;
+      }
+      setSelections((prev) => applyFillResult(prev, accepted));
+      const rejectedNote = rejected.length
+        ? ` (${rejected.length} rejected — not in allow-list)`
+        : "";
+      setFillStatus(
+        `Filled ${acceptedCount} field${acceptedCount === 1 ? "" : "s"}${rejectedNote}.`
+      );
+    } catch (e) {
+      setFillStatus(`Fill failed: ${e.message || String(e)}`);
+    } finally {
+      setFillLoading(false);
     }
   }
 
@@ -1661,6 +2146,20 @@ export default function App() {
 
   async function handleLoadLastSelection() {
     try {
+      if (IS_STATIC_HOSTING) {
+        const raw = localStorage.getItem(LOCAL_LAST_SELECTION_KEY);
+        if (!raw) {
+          throw new Error("No saved selection found in local storage");
+        }
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("Saved local selection is invalid");
+        }
+        setSelections(parsed);
+        setSelectionFileStatus("Loaded from local storage (static hosting mode).");
+        return;
+      }
+
       const res = await fetch(LAST_SELECTION_ENDPOINT);
       const payload = await res.json();
 
@@ -1713,9 +2212,14 @@ export default function App() {
             before writing begins. Compatibility rules run live. The model synthesizes the final
             blurb and maps your selections onto the 15 Save-the-Cat beats.
           </p>
-          <div style={S.apiKeyRow}>
+          <form
+            style={S.apiKeyRow}
+            onSubmit={(e) => e.preventDefault()}
+            autoComplete="off"
+          >
             <input
               type="password"
+              name="apiKey"
               placeholder="API key (Anthropic sk-ant-... or OpenAI sk-... / sk-proj-...)"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
@@ -1724,7 +2228,61 @@ export default function App() {
             <span style={{ fontSize: "10px", color: COLOR.dim, letterSpacing: "2px" }}>
               {keyStatus}
             </span>
+          </form>
+        </div>
+
+        <div
+          style={{
+            marginTop: "16px",
+            marginBottom: "20px",
+            padding: "14px 16px",
+            border: `1px solid ${COLOR.border}`,
+            background: "rgba(138,92,246,0.05)",
+            borderRadius: "3px",
+          }}
+        >
+          <div
+            style={{
+              fontSize: "10px",
+              color: COLOR.purple,
+              letterSpacing: "3px",
+              marginBottom: "10px",
+            }}
+          >
+            // START FROM A PRESET (OPTIONAL)
           </div>
+          <div style={S.historyRow}>
+            <select
+              style={S.historySelect}
+              value={selectedPresetId}
+              onChange={(e) => setSelectedPresetId(e.target.value)}
+            >
+              <option value="">— choose a subgenre starting point —</option>
+              {PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              style={S.restoreBtn}
+              onClick={handleApplyPreset}
+              disabled={!selectedPresetId}
+            >
+              ▸ APPLY PRESET
+            </button>
+          </div>
+          {selectedPresetId && (
+            <div style={{ ...S.statusLine, marginTop: "8px" }}>
+              {findPreset(selectedPresetId)?.description}
+            </div>
+          )}
+          {presetStatus && (
+            <div style={{ ...S.statusLine, marginTop: "4px", color: COLOR.purpleLight }}>
+              {presetStatus}
+            </div>
+          )}
         </div>
 
         {LAYERS.map((layer) => (
@@ -1738,6 +2296,8 @@ export default function App() {
             fieldIndex={fieldIndex}
           />
         ))}
+
+        <CoherenceBadge coherence={coherence} />
 
         {warnings.length > 0 && (
           <div style={S.warnBox}>
@@ -1786,6 +2346,15 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={handleFillRest}
+            style={S.utilityBtn}
+            disabled={loading || fillLoading || !apiKey}
+            title={!apiKey ? "API key required" : "Let the model fill remaining empty fields"}
+          >
+            {fillLoading ? "◌ FILLING…" : "✨ FILL THE REST"}
+          </button>
+          <button
+            type="button"
             onClick={handleLoadLastSelection}
             style={S.utilityBtn}
             disabled={loading}
@@ -1793,6 +2362,9 @@ export default function App() {
             ↺ LOAD LAST SELECTION
           </button>
         </div>
+        {fillStatus && (
+          <div style={{ ...S.statusLine, color: COLOR.purpleLight }}>{fillStatus}</div>
+        )}
         <div style={S.historyRow}>
           <select
             style={S.historySelect}
@@ -1801,7 +2373,7 @@ export default function App() {
             disabled={selectionHistory.length === 0 || loading}
           >
             <option value="">— history (latest 10) —</option>
-            {selectionHistory.slice(0, 10).map((entry, i) => (
+            {selectionHistory.slice(0, HISTORY_LIMIT).map((entry, i) => (
               <option key={entry.id} value={entry.id}>
                 {formatHistoryLabel(entry, i)}
               </option>

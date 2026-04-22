@@ -67,6 +67,9 @@ function detectHighValueCombos(systemDesign, selections) {
   });
 }
 
+// Re-export so the UI can compute a coherence score without duplicating logic.
+export { detectHighValueCombos };
+
 /**
  * Build the sectioned, human-readable brief that goes to the model as `user`.
  * Skips empty sections automatically.
@@ -96,6 +99,7 @@ export function buildStructuredBrief({
   push(
     "Macro — World",
     [
+      renderField(idx, selections, "subgenre", "Subgenre"),
       renderField(idx, selections, "integrationType", "Integration"),
       renderField(idx, selections, "worldScale", "World scale"),
       renderField(idx, selections, "techLevel", "Tech level"),
@@ -151,6 +155,10 @@ export function buildStructuredBrief({
       renderField(idx, selections, "progressionPacing", "Pacing"),
       renderField(idx, selections, "powerCeilingFeel", "Ceiling feel"),
       renderField(idx, selections, "powerExpression", "Power expression"),
+      renderField(idx, selections, "progressionRungs", "Rung ladder"),
+      selections.progressionCustomRungs
+        ? `- Custom rungs: ${selections.progressionCustomRungs}`
+        : null,
     ]
       .filter(Boolean)
       .join("\n")
@@ -203,6 +211,7 @@ export function buildStructuredBrief({
     "Protagonist",
     [
       renderField(idx, selections, "archetype", "Archetype"),
+      renderField(idx, selections, "archetypeFlavor", "Personality flavor"),
       renderField(idx, selections, "flawType", "Flaw"),
       renderField(idx, selections, "flawArc", "Flaw arc"),
       renderField(idx, selections, "howTheyWin", "How they win"),
@@ -216,6 +225,8 @@ export function buildStructuredBrief({
   push(
     "Micro — Texture",
     [
+      renderField(idx, selections, "toneSeriousness", "Tone — seriousness"),
+      renderField(idx, selections, "toneOptimism", "Tone — optimism"),
       renderField(idx, selections, "primaryTone", "Primary tone"),
       renderField(idx, selections, "toneConsistency", "Tone consistency"),
       renderField(idx, selections, "chapterStructure", "Chapter structure"),
