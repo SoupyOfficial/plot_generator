@@ -4,35 +4,35 @@ import { computeCoherence, labelForScore } from "../coherence.js";
 
 describe("labelForScore", () => {
   it("bands work at edges", () => {
-    expect(labelForScore(100).label).toBe("High");
-    expect(labelForScore(85).label).toBe("High");
-    expect(labelForScore(84).label).toBe("Solid");
-    expect(labelForScore(65).label).toBe("Solid");
-    expect(labelForScore(64).label).toBe("Mixed");
-    expect(labelForScore(40).label).toBe("Mixed");
-    expect(labelForScore(39).label).toBe("Fractured");
-    expect(labelForScore(0).label).toBe("Fractured");
+    expect(labelForScore(100).label).toBe("Banger");
+    expect(labelForScore(85).label).toBe("Banger");
+    expect(labelForScore(84).label).toBe("Query-Ready");
+    expect(labelForScore(65).label).toBe("Query-Ready");
+    expect(labelForScore(64).label).toBe("Workshop");
+    expect(labelForScore(40).label).toBe("Workshop");
+    expect(labelForScore(39).label).toBe("Rough Draft");
+    expect(labelForScore(0).label).toBe("Rough Draft");
   });
 });
 
 describe("computeCoherence", () => {
   const required = ["a", "b", "c", "d"];
 
-  it("empty selection is fractured", () => {
+  it("empty selection is rough draft", () => {
     const out = computeCoherence({ requiredIds: required, selections: {} });
-    expect(out.label).toBe("Fractured");
+    expect(out.label).toBe("Rough Draft");
     expect(out.breakdown.filled).toBe(0);
     expect(out.breakdown.completeness).toBe(0);
   });
 
-  it("full selection with no warnings is high", () => {
+  it("full selection with no warnings is banger", () => {
     const out = computeCoherence({
       requiredIds: required,
       selections: { a: "1", b: "2", c: "3", d: "4" },
       subplotCount: 3,
       warnings: [],
     });
-    expect(out.label).toBe("High");
+    expect(out.label).toBe("Banger");
     expect(out.breakdown.compatibility).toBe(100);
   });
 

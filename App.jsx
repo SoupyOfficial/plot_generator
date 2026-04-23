@@ -19,6 +19,45 @@ import {
   applyFillResult,
   collectEmptyFields,
 } from "./src/lib/fillRest.js";
+import { detectCombos, newlyTriggered } from "./src/lib/combos.js";
+import { computeRarity } from "./src/lib/rarity.js";
+import {
+  rollDice as rollDiceLogic,
+  getRerollBudget,
+  consumeReroll,
+  resetRerollBudget,
+  DEFAULT_REROLL_BUDGET,
+} from "./src/lib/randomize.js";
+import {
+  findCompanion,
+  renderCompanionsSection,
+} from "./src/lib/companions.js";
+import {
+  resolveRungs,
+  normalizePins,
+  describePins,
+} from "./src/lib/ladder.js";
+import {
+  readXp,
+  addXp,
+  buildWeakSpotsPrompt,
+  parseWeakSpotsResponse,
+  XP_PER_WEAK_SPOT_FIXED,
+  XP_PER_GENERATION,
+  XP_PER_BANGER_COHERENCE,
+} from "./src/lib/levelUp.js";
+import {
+  CoherenceMeter,
+  ComboToasts,
+  RarityBadge,
+  WeakSpots,
+  XpBar,
+  RollDiceButton,
+  DraftModePanel,
+  CompanionBuilder,
+  ProgressionLadder,
+  GamifyStyles,
+} from "./src/components/gamify.jsx";
 
 const SYSTEM_PURPOSE_OPTIONS = SYSTEM_STORY_DESIGN.archetypes.map(
   (a) => `${a.label} — ${a.goal}`
@@ -1679,10 +1718,10 @@ function Field({ comp, value, onChange, fieldIndex, selections }) {
 function CoherenceBadge({ coherence }) {
   if (!coherence) return null;
   const colorByLabel = {
-    High: COLOR.purple,
-    Solid: COLOR.purpleSoft,
-    Mixed: "#d4a843",
-    Fractured: "#c45c5c",
+    Banger: COLOR.purple,
+    "Query-Ready": COLOR.purpleSoft,
+    Workshop: "#d4a843",
+    "Rough Draft": "#c45c5c",
   };
   const accent = colorByLabel[coherence.label] || COLOR.purpleSoft;
   const b = coherence.breakdown;
@@ -1807,6 +1846,21 @@ export default function App() {
   const outputRef = useRef(null);
   const hasSelectionInitialized = useRef(false);
 
+  // ── Gamification state ────────────────────────────────────────────────
+  const [comboToasts, setComboToasts] = useState([]); // {key, label}
+  const toastKeyRef = useRef(0);
+  const [rerollBudget, setRerollBudget] = useState(() => {
+    try { return getRerollBudget(); } catch { return DEFAULT_REROLL_BUDGET; }
+  });
+  const [rolling, setRolling] = useState(false);
+  const [draftOpen, setDraftOpen] = useState(false);
+  const [xp, setXp] = useState(() => { try { return readXp(); } catch { return 0; } });
+  const [weakSpots, setWeakSpots] = useState(null); // null = not requested, [] = returned empty
+  const [weakSpotsLoading, setWeakSpotsLoading] = useState(false);
+  const [fixedWeakSpotIds, setFixedWeakSpotIds] = useState([]);
+  const lastScoreRef = useRef(null);
+  const [scoreDelta, setScoreDelta] = useState(0);
+
   // Memoized field index; used by Field to compute per-option conflict state.
   const fieldIndex = useMemo(() => buildFieldIndex(LAYERS), []);
 
@@ -1894,8 +1948,32 @@ export default function App() {
     };
   }, []);
 
+  function pushToast(label) {
+    toastKeyRef.current += 1;
+    const key = toastKeyRef.current;
+    setComboToasts((prev) => [...prev, { key, label }]);
+    setTimeout(() => {
+      setComboToasts((prev) => prev.filter((t) => t.key !== key));
+    }, 4500);
+  }
+
+  function applySelections(updater) {
+    setSelections((prev) => {
+      const next = typeof updater === "function" ? updater(prev) : updater;
+      try {
+        const fresh = newlyTriggered(prev, next);
+        if (fresh?.length) {
+          for (const c of fresh) pushToast(`◆ COMBO UNLOCKED · ${c.label}`);
+        }
+      } catch {
+        /* ignore combo errors */
+      }
+      return next;
+    });
+  }
+
   const setSelection = (id, v) =>
-    setSelections((p) => ({ ...p, [id]: v }));
+    applySelections((p) => ({ ...p, [id]: v }));
 
   useEffect(() => {
     if (!hasSelectionInitialized.current) {
@@ -2037,20 +2115,77 @@ export default function App() {
     [requiredIds, selections, warnings]
   );
 
+  // Track score-to-score delta so the meter can flash +N / -N.
+  useEffect(() => {
+    if (!coherence) return;
+    if (lastScoreRef.current == null) {
+      lastScoreRef.current = coherence.score;
+      return;
+    }
+    const delta = coherence.score - lastScoreRef.current;
+    lastScoreRef.current = coherence.score;
+    if (delta !== 0) {
+      setScoreDelta(delta);
+      const tid = setTimeout(() => setScoreDelta(0), 900);
+      return () => clearTimeout(tid);
+    }
+  }, [coherence?.score]);
+
+  // Rarity — live from current selections (shown alongside output).
+  const rarity = useMemo(
+    () =>
+      computeRarity({
+        layers: LAYERS,
+        selections,
+        systemDesign: SYSTEM_STORY_DESIGN,
+        warningsCount: warnings.length,
+      }),
+    [selections, warnings]
+  );
+
+  function buildExtraNotes() {
+    const parts = [];
+    const companions = selections.companions || [];
+    if (companions.length) {
+      const section = renderCompanionsSection(companions);
+      if (section) parts.push(section);
+    }
+    const rungs = resolveRungs(selections);
+    if (rungs.length) {
+      const pins = normalizePins(selections.progressionPins, rungs.length);
+      if (pins) {
+        const line = describePins(rungs, pins);
+        if (line) parts.push(`## Progression Pacing\n${line}. Beat structure should honor these milestones.`);
+      }
+    }
+    return parts.length ? parts.join("\n\n") : "";
+  }
+
   async function handleGenerate() {
     setError(null);
     setOutput(null);
+    setWeakSpots(null);
+    setFixedWeakSpotIds([]);
     if (!apiKey) {
       setError("API key required (Anthropic or OpenAI).");
       return;
     }
     setLoading(true);
     try {
+      const extra = buildExtraNotes();
+      const mergedNotes = [userNotes, extra].filter(Boolean).join("\n\n");
       const result = await callModel(apiKey, selections, {
         activeWarnings: warnings,
-        userNotes,
+        userNotes: mergedNotes,
       });
       setOutput({ ...result, selections });
+
+      // XP: generation reward + coherence bonus
+      let gained = XP_PER_GENERATION;
+      if (coherence?.label === "Banger") gained += XP_PER_BANGER_COHERENCE;
+      setXp(addXp(gained));
+      if (gained > XP_PER_GENERATION) pushToast(`✦ +${gained} XP · Banger coherence bonus!`);
+
       setTimeout(() => outputRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
     } catch (e) {
       setError(e.message || String(e));
@@ -2100,8 +2235,100 @@ export default function App() {
     }
   }
 
+  // ── Roll the dice: staggered reveal (single-select only) ──
+  async function handleRollDice() {
+    if (rolling) return;
+    if (rerollBudget <= 0) return;
+    const { selections: nextAll, changed } = rollDiceLogic({
+      layers: LAYERS,
+      selections,
+      overwrite: false,
+    });
+    if (!changed.length) {
+      pushToast("✦ Nothing to roll — all single-select fields are already set.");
+      return;
+    }
+    setRolling(true);
+    const remaining = consumeReroll();
+    setRerollBudget(remaining);
+
+    let step = 0;
+    for (const id of changed) {
+      const delay = step * 180;
+      setTimeout(() => {
+        applySelections((prev) => ({ ...prev, [id]: nextAll[id] }));
+        if (step === changed.length - 1) {
+          setTimeout(() => setRolling(false), 200);
+        }
+      }, delay);
+      step += 1;
+    }
+  }
+
+  function handleResetBudget() {
+    const n = resetRerollBudget();
+    setRerollBudget(n);
+  }
+
+  // ── Draft Mode commit ──
+  function handleDraftCommit(nextAll) {
+    applySelections(() => ({ ...nextAll }));
+    setDraftOpen(false);
+    pushToast("✦ Draft mode complete");
+  }
+
+  // ── Level-up weak spots ──
+  async function handleFetchWeakSpots() {
+    if (!apiKey || !output) return;
+    setWeakSpotsLoading(true);
+    try {
+      const extra = buildExtraNotes();
+      const mergedNotes = [userNotes, extra].filter(Boolean).join("\n\n");
+      const { buildGenerationPrompt } = await import("./src/lib/prompt.js");
+      const { user: brief } = buildGenerationPrompt({
+        layers: LAYERS,
+        selections,
+        systemDesign: SYSTEM_STORY_DESIGN,
+        activeWarnings: warnings,
+        userNotes: mergedNotes,
+      });
+      const { system, user } = buildWeakSpotsPrompt({ brief, selections });
+      const text = await callModelRawText(apiKey, { system, user });
+      const parsed = parseWeakSpotsResponse(text);
+      setWeakSpots(parsed);
+      setFixedWeakSpotIds([]);
+    } catch (e) {
+      setWeakSpots([]);
+      setError(e.message || String(e));
+    } finally {
+      setWeakSpotsLoading(false);
+    }
+  }
+
+  function handleFixWeakSpot(id, weakSpot) {
+    setFixedWeakSpotIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+    setXp(addXp(XP_PER_WEAK_SPOT_FIXED));
+    pushToast(`✦ +${XP_PER_WEAK_SPOT_FIXED} XP · weak spot fixed`);
+    // Open and scroll to the implicated layer if we can find the field
+    if (weakSpot?.field) {
+      const fieldId = Object.keys(fieldIndex).find(
+        (k) => k === weakSpot.field || fieldIndex[k]?.label === weakSpot.field
+      );
+      if (fieldId) {
+        for (const layer of LAYERS) {
+          const found = layer.groups?.some((g) =>
+            g.components?.some((c) => c.id === fieldId)
+          );
+          if (found) {
+            setOpenLayers((prev) => ({ ...prev, [layer.id]: true }));
+            break;
+          }
+        }
+      }
+    }
+  }
+
   function buildCopyText() {
-    if (!output) return "";
     const lines = [];
     lines.push("═══════════════════════════════════════════");
     lines.push("  STORY SEED");
@@ -2195,6 +2422,11 @@ export default function App() {
 
   return (
     <div style={S.root}>
+      <GamifyStyles />
+      <ComboToasts
+        toasts={comboToasts}
+        onDismiss={(key) => setComboToasts((prev) => prev.filter((t) => t.key !== key))}
+      />
       <div style={S.grid} />
       <div style={S.orb1} />
       <div style={S.orb2} />
@@ -2228,6 +2460,7 @@ export default function App() {
             <span style={{ fontSize: "10px", color: COLOR.dim, letterSpacing: "2px" }}>
               {keyStatus}
             </span>
+            <XpBar xp={xp} />
           </form>
         </div>
 
@@ -2286,18 +2519,35 @@ export default function App() {
         </div>
 
         {LAYERS.map((layer) => (
-          <Layer
-            key={layer.id}
-            layer={layer}
-            selections={selections}
-            setSelection={setSelection}
-            open={!!openLayers[layer.id]}
-            onToggle={() => toggleLayer(layer.id)}
-            fieldIndex={fieldIndex}
-          />
+          <div key={layer.id}>
+            <Layer
+              layer={layer}
+              selections={selections}
+              setSelection={setSelection}
+              open={!!openLayers[layer.id]}
+              onToggle={() => toggleLayer(layer.id)}
+              fieldIndex={fieldIndex}
+            />
+            {openLayers[layer.id] && layer.id === "mid" && (
+              <ProgressionLadder
+                selections={selections}
+                setPins={(pins) =>
+                  setSelections((prev) => ({ ...prev, progressionPins: pins }))
+                }
+              />
+            )}
+            {openLayers[layer.id] && layer.id === "protagonist" && (
+              <CompanionBuilder
+                selections={selections}
+                setCompanions={(ids) =>
+                  setSelections((prev) => ({ ...prev, companions: ids }))
+                }
+              />
+            )}
+          </div>
         ))}
 
-        <CoherenceBadge coherence={coherence} />
+        <CoherenceMeter coherence={coherence} lastDelta={scoreDelta} />
 
         {warnings.length > 0 && (
           <div style={S.warnBox}>
@@ -2353,6 +2603,31 @@ export default function App() {
           >
             {fillLoading ? "◌ FILLING…" : "✨ FILL THE REST"}
           </button>
+          <RollDiceButton
+            budget={rerollBudget}
+            rolling={rolling}
+            onRoll={handleRollDice}
+            disabled={loading || fillLoading}
+          />
+          <button
+            type="button"
+            onClick={() => setDraftOpen(true)}
+            style={S.utilityBtn}
+            disabled={loading || fillLoading || rolling}
+            title="Draft mode: pick from a 3-card hand for each field"
+          >
+            🎴 DRAFT MODE
+          </button>
+          {rerollBudget <= 0 && (
+            <button
+              type="button"
+              onClick={handleResetBudget}
+              style={S.utilityBtn}
+              title="Reset session re-roll budget"
+            >
+              ↻ RESET BUDGET
+            </button>
+          )}
           <button
             type="button"
             onClick={handleLoadLastSelection}
@@ -2403,6 +2678,7 @@ export default function App() {
             <div style={{ fontSize: "10px", color: COLOR.purple, letterSpacing: "3px", marginBottom: "16px" }}>
               // OUTPUT
             </div>
+            <RarityBadge rarity={rarity} />
             <pre
               style={{
                 margin: 0,
@@ -2416,9 +2692,27 @@ export default function App() {
             >
               {buildCopyText()}
             </pre>
+            <WeakSpots
+              weakSpots={weakSpots}
+              loading={weakSpotsLoading}
+              onFetch={handleFetchWeakSpots}
+              onFix={handleFixWeakSpot}
+              fixedIds={fixedWeakSpotIds}
+              apiKeyAvailable={!!apiKey}
+            />
           </div>
         )}
       </div>
+
+      {draftOpen && (
+        <DraftModePanel
+          layers={LAYERS}
+          selections={selections}
+          fieldIndex={fieldIndex}
+          onCommit={handleDraftCommit}
+          onClose={() => setDraftOpen(false)}
+        />
+      )}
     </div>
   );
 }

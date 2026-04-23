@@ -9,10 +9,10 @@
 // Per the decision: qualitative label is primary; numeric is tooltip-only.
 
 const LABELS = [
-  { min: 85, label: "High", blurb: "Story spine is coherent." },
-  { min: 65, label: "Solid", blurb: "Mostly consistent; minor friction." },
-  { min: 40, label: "Mixed", blurb: "Review warnings before generating." },
-  { min: 0,  label: "Fractured", blurb: "Contradictions present; seed will drift." },
+  { min: 85, label: "Banger", blurb: "Story spine is coherent and rich — ship it." },
+  { min: 65, label: "Query-Ready", blurb: "Mostly consistent; minor friction." },
+  { min: 40, label: "Workshop", blurb: "Review warnings before generating." },
+  { min: 0,  label: "Rough Draft", blurb: "Contradictions present; seed will drift." },
 ];
 
 export function labelForScore(score) {
