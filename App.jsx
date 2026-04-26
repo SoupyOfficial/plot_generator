@@ -58,932 +58,43 @@ import {
   ProgressionLadder,
   GamifyStyles,
 } from "./src/components/gamify.jsx";
-
-const SYSTEM_PURPOSE_OPTIONS = SYSTEM_STORY_DESIGN.archetypes.map(
-  (a) => `${a.label} — ${a.goal}`
-);
-
-const RESOLUTION_MODE_OPTIONS = Array.from(
-  new Set([
-    ...SYSTEM_STORY_DESIGN.resolutionModes.map((r) => `${r.label} (${r.desc})`),
-    "Destruction (system ends)",
-  ])
-);
+import { PipelineCockpit } from "./src/components/pipelineCockpit.jsx";
+import {
+  WizardShell,
+  ModeToggle,
+  DraftRecoveryBanner,
+} from "./src/components/wizard.jsx";
+import {
+  buildSteps as buildWizardSteps,
+  loadDraft as loadWizardDraft,
+  saveDraft as saveWizardDraft,
+  clearDraft as clearWizardDraft,
+  loadWizardState,
+  saveWizardState,
+  loadViewMode,
+  saveViewMode,
+  hasDraft as hasWizardDraft,
+  firstIncompleteIndex as firstIncompleteWizardStep,
+} from "./src/lib/wizard.js";
+import { LAYERS } from "./src/data/layers.js";
+import {
+  createContract,
+  serializeContract,
+  parseContract,
+  exportMarkdown as exportContractMarkdown,
+  toShareHash,
+  fromShareHash,
+} from "./src/lib/contract.js";
+import {
+  buildReverseEngineerPrompt,
+  parseReverseEngineerResponse,
+} from "./src/lib/reverseEngineer.js";
 
 // ============================================================================
-// COMPONENT DATA — extracted from story_anatomy + system_story_design.js + system_story_design.pdf
+// COMPONENT DATA — moved to ./src/data/layers.js (Phase 14 prep).
+// SYSTEM_STORY_DESIGN stays imported here because it's read elsewhere in this
+// file (presets, summaries); LAYERS itself derives the option lists internally.
 // ============================================================================
-
-const LAYERS = [
-  {
-    id: "macro",
-    num: 1,
-    title: "Macro Structure",
-    subtitle: "The bones. One selection per component.",
-    groups: [
-      {
-        id: "world",
-        title: "1.1 World / Setting",
-        components: [
-          {
-            id: "subgenre",
-            label: "Subgenre (declare the shelf)",
-            options: [
-              {
-                value: "Genre-agnostic",
-                description: "No subgenre commitment; let the other layers decide the shelf.",
-              },
-              "Classical progression fantasy (cultivation / ranks)",
-              "LitRPG (visible stats & levels)",
-              "System apocalypse",
-              "Portal / isekai",
-              "Dungeon core",
-              "Cozy LitRPG / low-stakes",
-              "Regression / time loop",
-              "Xianxia / wuxia",
-              "Magical academy",
-              "Superhero progression",
-              "Post-apocalyptic survival",
-            ],
-          },
-          {
-            id: "integrationType",
-            label: "Integration Type",
-            options: [
-              "System apocalypse (Earth gets a system)",
-              "Portal fantasy (transported)",
-              "Virtual reality (VR/game trapped)",
-              "Native world (system always existed)",
-              "Hybrid (Earth + portal)",
-            ],
-          },
-          {
-            id: "worldScale",
-            label: "World Scale",
-            options: ["Single planet", "Multiverse / realms", "Dungeon-only", "City-state", "Galactic"],
-          },
-          {
-            id: "techLevel",
-            label: "Technology Level",
-            options: [
-              "Pre-modern",
-              "Modern real world",
-              "Near-future",
-              "Sci-fi / post-human",
-              "Mixed (magic + tech)",
-            ],
-          },
-        ],
-      },
-      {
-        id: "system",
-        title: "1.2 System Structure",
-        components: [
-          {
-            id: "systemVisibility",
-            label: "System Visibility",
-            options: [
-              "Full UI (stat screens, notifications)",
-              "Partial (some elements visible)",
-              "Hidden (felt but not seen)",
-              "Contested (protagonist questions it)",
-            ],
-          },
-          {
-            id: "systemOrigin",
-            label: "System Origin",
-            options: [
-              "Unknown / mysterious",
-              "Divine / god-created",
-              "Alien intelligence",
-              "Human-built gone rogue",
-              "Natural evolution of reality",
-              "Collapsed civilization remnant",
-            ],
-          },
-          {
-            id: "systemPurpose",
-            label: "System Purpose (hidden archetype)",
-            options: SYSTEM_PURPOSE_OPTIONS.map((v) => {
-              // Entertainment archetype forbids Defier: audience wants constrain every decision
-              if (/entertainment/i.test(v)) {
-                return {
-                  value: v,
-                  description:
-                    "Audience desire is the invisible constraint on every protagonist choice.",
-                  tags: ["audience-pressure", "visible-constraint"],
-                  forbids: { archetype: "The Defier" },
-                };
-              }
-              return v;
-            }),
-          },
-          {
-            id: "systemAlignment",
-            label: "System Alignment",
-            options: [
-              "Neutral / indifferent",
-              "Actively helpful",
-              "Passively hostile",
-              "Deceptively benevolent",
-              "Openly adversarial",
-              "Evolving alongside protagonist",
-            ],
-          },
-          {
-            id: "systemCeiling",
-            label: "System Ceiling",
-            options: [
-              "Hard cap (defined max level/tier)",
-              "Soft cap (diminishing returns)",
-              "No visible ceiling",
-              "Hidden ceiling revealed late",
-            ],
-          },
-        ],
-      },
-      {
-        id: "entry",
-        title: "1.3 Protagonist Entry Point",
-        components: [
-          {
-            id: "entryCondition",
-            label: "Entry Condition",
-            options: [
-              "Random selection",
-              "Chosen / prophesied",
-              "Accident / wrong place",
-              "Earned / applied",
-              "Reincarnation / time reset",
-              "Born into it",
-              "Forced / trapped",
-            ],
-          },
-          {
-            id: "startingState",
-            label: "Starting State",
-            options: [
-              "Weakest possible (underdog)",
-              "Average",
-              "Hidden overpowered",
-              "Already powerful",
-              "Formerly powerful / reset",
-              "Disabled / restricted",
-            ],
-          },
-          {
-            id: "knowledgeAdvantage",
-            label: "Knowledge Advantage",
-            options: [
-              "None (blank slate)",
-              "Future knowledge (time travel)",
-              "Meta knowledge (knows it's a game)",
-              "Partial insider info",
-              "Expert in adjacent field",
-            ],
-          },
-        ],
-      },
-      {
-        id: "conflict",
-        title: "1.4 Core Conflict",
-        components: [
-          {
-            id: "primaryConflict",
-            label: "Primary Conflict",
-            options: [
-              "Protagonist vs system",
-              "Protagonist vs external threat",
-              "Protagonist vs faction/society",
-              "Protagonist vs self",
-              "Protagonist vs another chosen",
-              "Protagonist vs system's creator",
-            ],
-          },
-          {
-            id: "conflictOrigin",
-            label: "Conflict Origin",
-            options: [
-              "Imposed by system",
-              "Personal vendetta",
-              "Ideological",
-              "Survival",
-              "Protection of others",
-              "Curiosity / discovery",
-            ],
-          },
-        ],
-      },
-      {
-        id: "ending",
-        title: "1.5 Terminal Ending (LOCK BEFORE WRITING)",
-        components: [
-          {
-            id: "resolutionMode",
-            label: "Resolution Mode",
-            options: RESOLUTION_MODE_OPTIONS.map((v) => {
-              if (/exposure/i.test(v)) {
-                return {
-                  value: v,
-                  description:
-                    "Truth about the system is the climax. Requires early breadcrumbs — incompatible with 'Single late reveal' pacing.",
-                  tags: ["mystery", "requires-breadcrumbs"],
-                  forbids: { truthRevealPacing: "Single late reveal" },
-                };
-              }
-              return v;
-            }),
-          },
-          {
-            id: "protagonistOutcome",
-            label: "Protagonist Outcome",
-            options: [
-              "Transcendence (becomes something new)",
-              "Return (back to ordinary)",
-              "Sacrifice",
-              "Apotheosis (becomes part of system)",
-              "Rejection (walks away)",
-              "Coexistence",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "mid",
-    num: 2,
-    title: "Mid Structure",
-    subtitle: "The meat. Shapes texture across the full length.",
-    groups: [
-      {
-        id: "progression",
-        title: "2.1 Power Progression",
-        components: [
-          {
-            id: "progressionMechanic",
-            label: "Progression Mechanic",
-            options: [
-              "Level / XP grinding",
-              "Cultivation tiers (named ranks)",
-              "Skill tree unlocks",
-              "Stat allocation",
-              "Class evolution",
-              "Bloodline / inheritance",
-              "Crafting / creation",
-              "Insight / epiphany",
-              "Hybrid",
-            ],
-          },
-          {
-            id: "progressionPacing",
-            label: "Progression Pacing",
-            options: [
-              "Rapid early / slow late",
-              "Slow and earned throughout",
-              "Explosive breakthroughs",
-              "Plateau and burst",
-              "Continuous steady climb",
-            ],
-          },
-          {
-            id: "powerCeilingFeel",
-            label: "Power Ceiling Feel",
-            options: [
-              "Infinite (always more to gain)",
-              "Bounded (visible finish line)",
-              "Asymptotic (approaches but never reaches)",
-              "Tier-gated (hard walls between stages)",
-            ],
-          },
-          {
-            id: "powerExpression",
-            label: "Power Expression",
-            options: [
-              "Combat-dominant",
-              "Crafting / utility",
-              "Political / social",
-              "Knowledge / information",
-              "Creation / building",
-              "Hybrid",
-            ],
-          },
-          {
-            id: "progressionRungs",
-            label: "Progression Ladder (optional)",
-            options: [
-              {
-                value: "Cultivation — 9 named realms",
-                description:
-                  "Body Tempering → Foundation → Core → Nascent Soul → Spirit Severing → Dao Seeking → Immortal → Ascendant → Transcendent.",
-              },
-              {
-                value: "LitRPG — numeric levels (1–100)",
-                description: "Tier gates every 10 levels; stats allocatable on level up.",
-              },
-              {
-                value: "Metal tiers — Bronze → Silver → Gold → Diamond → Legendary",
-                description: "Clear visible tier walls; each tier is a mini-arc.",
-              },
-              {
-                value: "Academy — year-based (Freshman → Senior → Graduate)",
-                description: "School structure doubles as progression rhythm.",
-              },
-              {
-                value: "Custom — define your own rungs below",
-                description: "Use the 'Custom rungs' field to list them in order.",
-              },
-            ],
-          },
-          {
-            id: "progressionCustomRungs",
-            label: "Custom rungs (optional) — comma or arrow separated, in order",
-            freeform: true,
-            placeholder: "e.g. Initiate → Apprentice → Adept → Master → Grandmaster",
-          },
-        ],
-      },
-      {
-        id: "antagonist",
-        title: "2.2 Antagonist",
-        components: [
-          {
-            id: "antagonistType",
-            label: "Primary Antagonist Type",
-            options: [
-              "The system itself",
-              "A rival chosen",
-              "Faction / organization",
-              "Ancient/cosmic entity",
-              "Former mentor",
-              "Protagonist's past self",
-              "Corrupt authority",
-              "Hidden observer",
-            ],
-          },
-          {
-            id: "antagonistMotivation",
-            label: "Antagonist Motivation",
-            options: [
-              "Ideological (believes they're right)",
-              "Self-preservation",
-              "Power accumulation",
-              "Revenge",
-              "Devotion to system",
-              "Fear of protagonist",
-              "Competing for same goal",
-            ],
-          },
-          {
-            id: "antagonistReveal",
-            label: "Antagonist Reveal Timing",
-            options: [
-              "Known from start",
-              "Gradual reveal",
-              "Late twist",
-              "Multiple antagonists",
-              "No single antagonist (systemic)",
-            ],
-          },
-        ],
-      },
-      {
-        id: "factions",
-        title: "2.3 Faction / World",
-        components: [
-          {
-            id: "factionLandscape",
-            label: "Faction Landscape",
-            options: [
-              "Single dominant power",
-              "Two opposing sides",
-              "Multi-faction balance",
-              "Hierarchy of powers (tiers/realms)",
-              "No factions (individual survival)",
-            ],
-          },
-          {
-            id: "factionRole",
-            label: "Protagonist's Faction Role",
-            options: [
-              "Lone wolf",
-              "Reluctant member",
-              "Hidden agent",
-              "Leader / builder",
-              "Faction hopper",
-              "Creates own faction",
-            ],
-          },
-          {
-            id: "politicalTexture",
-            label: "Political Texture",
-            options: [
-              "Minimal (action-focused)",
-              "Moderate (alliances matter)",
-              "Heavy (court intrigue)",
-              "Systemic (factions ARE the conflict)",
-            ],
-          },
-        ],
-      },
-      {
-        id: "stakes",
-        title: "2.4 Stakes Escalation",
-        components: [
-          {
-            id: "escalationType",
-            label: "Escalation Type",
-            options: [
-              "Personal → regional → global → cosmic",
-              "Slow burn with single explosion",
-              "Multiple escalations with resets",
-              "Stakes introduced late",
-              "Constant high stakes",
-            ],
-          },
-          {
-            id: "costOfPower",
-            label: "Cost of Power",
-            options: [
-              "None (pure wish fulfillment)",
-              "Physical cost",
-              "Moral cost",
-              "Relationship cost",
-              "Identity cost",
-              "All of the above",
-            ],
-          },
-        ],
-      },
-      {
-        id: "revelation",
-        title: "2.5 System Revelation",
-        components: [
-          {
-            id: "truthRevealPacing",
-            label: "Truth Reveal Pacing",
-            options: [
-              {
-                value: "Drip (one piece per arc)",
-                description: "Steady escalation of revelation.",
-                tags: ["mystery-friendly"],
-              },
-              {
-                value: "Two-stage (partial early / full late)",
-                description: "Reader learns shape early, full truth late.",
-                tags: ["mystery-friendly"],
-              },
-              {
-                value: "Single late reveal",
-                description:
-                  "One big reveal at the end. This is a TWIST, not a resolution — cannot pair with an Exposure ending.",
-                tags: ["twist"],
-                forbids: { resolutionMode: "Exposure" },
-              },
-              "Protagonist discovers vs told",
-              "Red herrings before truth",
-            ],
-          },
-          {
-            id: "revelationTrigger",
-            label: "Revelation Trigger",
-            options: [
-              "Protagonist earns it",
-              "Antagonist exposes it",
-              "Accident / wrong place",
-              "System reveals itself",
-              "Third party reveals",
-            ],
-          },
-          {
-            id: "truthImpact",
-            label: "Truth Impact on Protagonist",
-            options: [
-              "Validates their path",
-              "Shatters worldview",
-              "Forces choice",
-              "Changes nothing (they adapt)",
-              "Motivates final confrontation",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "subplots",
-    num: 3,
-    title: "Subplot Structure",
-    subtitle: "Pick 2–4 subplots. Each should have its own beginning, middle, end.",
-    multiSelect: true,
-    groups: [
-      {
-        id: "subplotPicks",
-        title: "3.x Subplot Selections (multi-select, pick 2–4)",
-        components: [
-          {
-            id: "subplots",
-            label: "Subplots",
-            multi: true,
-            min: 2,
-            max: 4,
-            options: [
-              "Mentor: Genuine guide",
-              "Mentor: Hidden agenda",
-              "Mentor: Betrayal",
-              "Mentor: Dies to motivate",
-              "Rival: Same goal, different method",
-              "Rival: Former ally",
-              "Rival: Mirror character",
-              "Companion: Found family",
-              "Companion: Assigned team",
-              "Romance: Slow burn",
-              "Romance: Forbidden",
-              "Romance: Absent by choice",
-              "Family as motivation",
-              "Family secret ties to system",
-              "Political intrigue: Faction war",
-              "Political intrigue: Power vacuum",
-              "Mystery: System origin investigation",
-              "Mystery: Hidden history of the world",
-              "World-building: Settlement / city building",
-              "World-building: Other chosen / competitors",
-              "Economic: Crafting empire",
-              "Economic: Information as currency",
-              "Identity crisis: Power changing who protagonist is",
-              "Identity crisis: Loss of humanity",
-              "Moral dilemma: Ends vs means",
-              "Moral dilemma: System rewards evil",
-              "Secret: Protagonist hiding ability",
-              "Secret: True identity",
-              "Obsession: Revenge driving irrational decisions",
-              "Obsession: Protecting one person above all",
-              "Investigation: What does the system actually want",
-              "Conspiracy: System has a secret controller",
-              "Conspiracy: The tutorial was a trap",
-              "Countdown: System event approaching",
-              "Countdown: Resource about to run out",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "protagonist",
-    num: 4,
-    title: "Protagonist Archetype",
-    subtitle: "The lens. Structural role in relation to the system.",
-    groups: [
-      {
-        id: "archetype",
-        title: "4.1 Relationship to the System",
-        components: [
-          {
-            id: "archetype",
-            label: "Archetype",
-            options: [
-              {
-                value: "The Exploiter — games the system as a tool",
-                description:
-                  "Treats the system as an optimization problem; wins by extracting value.",
-                tags: ["pragmatic", "tool-user"],
-              },
-              {
-                value: "The Investigator — driven to understand why",
-                description: "The central mystery IS the system's real purpose.",
-                tags: ["mystery", "cerebral"],
-              },
-              {
-                value: "The Defier — resists or subverts system intent",
-                description:
-                  "Autonomy is the thesis. Cannot coexist with Entertainment-purpose systems (audience pressure overrides defiance).",
-                tags: ["autonomous", "anti-system"],
-              },
-              {
-                value: "The True Believer — aligned, then shattered",
-                description: "Earns trust in the system, then discovers the lie.",
-                tags: ["faith-break"],
-              },
-              {
-                value: "The Returner — has foreknowledge",
-                description:
-                  "Knows how things 'should' go. Foreknowledge MUST compound into rivals, mystery, or red herrings — else the premise stalls.",
-                tags: ["foreknowledge", "compounding-required"],
-                requires: {
-                  knowledgeAdvantage: ["Future knowledge", "Meta knowledge"],
-                },
-              },
-              {
-                value: "The Builder — uses power to construct",
-                description: "Creates factions, crafting empires, or settlements.",
-                tags: ["constructive"],
-              },
-              {
-                value: "The Accidental — dragged in unwillingly",
-                description: "Reluctant everyman; humanity-first lens.",
-                tags: ["reluctant"],
-              },
-            ],
-          },
-          {
-            id: "archetypeFlavor",
-            label: "Personality Flavor (optional — overlay on the role)",
-            options: [
-              "Stoic operator",
-              "Charming rogue",
-              "Idealist / true-hearted",
-              "Cynic with a soft center",
-              "Scholar / obsessive learner",
-              "Warrior-poet",
-              "Wry deadpan",
-              "Zealot / driven by conviction",
-              "Reluctant everyman",
-              "Ruthless pragmatist",
-            ],
-          },
-        ],
-      },
-      {
-        id: "flaw",
-        title: "4.2 Core Flaw (required)",
-        components: [
-          {
-            id: "flawType",
-            label: "Flaw Type",
-            options: [
-              "Arrogance",
-              "Isolation",
-              "Recklessness",
-              "Obsession",
-              "Trust issues",
-              "Moral rigidity",
-              "Fear of intimacy",
-              "Overprotectiveness",
-              "Nihilism",
-            ],
-          },
-          {
-            id: "flawArc",
-            label: "Flaw Arc",
-            options: [
-              "Overcomes it",
-              "Learns to manage it",
-              "It costs them something major",
-              "It becomes a strength in context",
-              "Never fully resolves (realistic)",
-            ],
-          },
-        ],
-      },
-      {
-        id: "competency",
-        title: "4.3 Competency Style",
-        components: [
-          {
-            id: "howTheyWin",
-            label: "How They Win",
-            options: [
-              "Outfights",
-              "Outthinks",
-              "Outlasts",
-              "Out-networks (allies)",
-              "Out-crafts",
-              "Gets lucky consistently",
-              "Breaks the rules",
-            ],
-          },
-          {
-            id: "competencyReveal",
-            label: "Competency Reveal Pacing",
-            options: [
-              "Shown immediately",
-              "Hidden and revealed dramatically",
-              "Grows visibly over time",
-              "Underestimated by everyone",
-              "Overestimated by protagonist",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "beats",
-    num: 5,
-    title: "Beat Structure",
-    subtitle: "Save the Cat (15 beats). Generated from your selections by Claude.",
-    informational: true,
-    groups: [],
-  },
-  {
-    id: "micro",
-    num: 6,
-    title: "Micro Texture",
-    subtitle: "The seasoning. Shapes feel and voice.",
-    groups: [
-      {
-        id: "tone",
-        title: "6.1 Tone",
-        components: [
-          {
-            id: "toneSeriousness",
-            label: "Seriousness axis",
-            options: [
-              "Played straight (serious)",
-              "Wry / dry-witty",
-              "Comedic with real stakes",
-              "Full comedy / farce",
-            ],
-          },
-          {
-            id: "toneOptimism",
-            label: "Optimism axis",
-            options: [
-              "Hopeful / bright",
-              "Bittersweet",
-              "Grim but not nihilistic",
-              "Nihilistic / bleak",
-            ],
-          },
-          {
-            id: "primaryTone",
-            label: "Primary Tone (dominant flavor)",
-            options: [
-              "Grim / serious",
-              "Comedic",
-              "Cerebral / puzzle-focused",
-              "Action-dominant",
-              "Horror undertone",
-              "Hopeful despite darkness",
-              "Cynical",
-            ],
-          },
-          {
-            id: "toneConsistency",
-            label: "Tone Consistency",
-            options: [
-              "Constant throughout",
-              "Shifts per arc",
-              "Contrast used deliberately",
-              "Evolves with protagonist",
-            ],
-          },
-        ],
-      },
-      {
-        id: "pacing",
-        title: "6.2 Pacing Rhythm",
-        components: [
-          {
-            id: "chapterStructure",
-            label: "Chapter Structure",
-            options: [
-              "Single POV",
-              "Multiple POV alternating",
-              "Dual timeline",
-              "Retrospective narration",
-              "Real-time only",
-            ],
-          },
-          {
-            id: "actionRestRatio",
-            label: "Action / Rest Ratio",
-            options: [
-              "Constant action",
-              "Action-recovery cycles",
-              "Long quiet arcs punctuated by violence",
-              "Mostly tension with rare action",
-            ],
-          },
-          {
-            id: "infoRelease",
-            label: "Information Release",
-            options: [
-              "Front-loaded (reader knows more)",
-              "Drip-fed (discover together)",
-              "Delayed (protagonist knows, reader doesn't)",
-              "Mystery box (neither knows)",
-            ],
-          },
-        ],
-      },
-      {
-        id: "hooks",
-        title: "6.4 Chapter Hooks",
-        components: [
-          {
-            id: "hookType",
-            label: "Dominant Hook Type",
-            options: [
-              "Cliffhanger",
-              "Revelation",
-              "Emotional",
-              "Question",
-              "Callback",
-              "Irony",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "series",
-    num: 7,
-    title: "Series Architecture",
-    subtitle: "For multi-book plans. Define before book one.",
-    groups: [
-      {
-        id: "seriesType",
-        title: "7.1 Series Structure",
-        components: [
-          {
-            id: "arcType",
-            label: "Arc Type",
-            options: [
-              "Each book = self-contained story",
-              "Each book = one phase of larger arc",
-              "Continuous narrative (no book-level resolution)",
-              "Anthology (same world, different characters)",
-              "Single book (standalone)",
-            ],
-          },
-          {
-            id: "seriesCeiling",
-            label: "Series Ceiling",
-            options: [
-              "Defined (X books total)",
-              "Open-ended with defined ending",
-              "Open-ended with thematic endpoint",
-              "No planned ending",
-            ],
-          },
-        ],
-      },
-      {
-        id: "antidrift",
-        title: "7.3 Anti-Drift Mechanisms (pick at least 2 if open-ended)",
-        components: [
-          {
-            id: "antiDrift",
-            label: "Structural Locks",
-            multi: true,
-            min: 1,
-            max: 4,
-            options: [
-              "Hard system ceiling defined",
-              "Non-system stabilizing goal",
-              "Thematic question that must be answered",
-              "External deadline (event, threat, timer)",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-  {
-    id: "theme",
-    num: 8,
-    title: "Thematic Anchors",
-    subtitle: "The soul. Primary theme framed as a yes/no question.",
-    groups: [
-      {
-        id: "themePick",
-        title: "8.1 Primary Theme",
-        components: [
-          {
-            id: "primaryTheme",
-            label: "Primary Theme",
-            options: [
-              "Power vs Humanity",
-              "Control vs Freedom",
-              "Survival vs Morality",
-              "Progress vs Identity",
-              "Knowledge vs Consequence",
-              "Individual vs Collective",
-              "Truth vs Comfort",
-            ],
-          },
-          {
-            id: "secondaryTheme",
-            label: "Secondary Theme",
-            options: [
-              "Power vs Humanity",
-              "Control vs Freedom",
-              "Survival vs Morality",
-              "Progress vs Identity",
-              "Knowledge vs Consequence",
-              "Individual vs Collective",
-              "Truth vs Comfort",
-              "None",
-            ],
-          },
-        ],
-      },
-    ],
-  },
-];
 
 // ============================================================================
 // COMPATIBILITY RULES — from "COMPATIBILITY RULES" section of story_anatomy.docx
@@ -1107,7 +218,9 @@ async function callModel(apiKey, selections, extra = {}) {
 
 // --- FILL-THE-REST: raw text round-trip (no JSON parsing of the main schema) -
 
-async function callModelRawText(apiKey, { system, user }) {
+async function callModelRawText(apiKey, { system, user }, opts = {}) {
+  const json = opts.json !== false; // default true (back-compat)
+  const maxTokens = opts.maxTokens || 1500;
   const provider = detectProviderFromApiKey(apiKey);
   if (provider === "anthropic") {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -1120,7 +233,7 @@ async function callModelRawText(apiKey, { system, user }) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-20250514",
-        max_tokens: 1500,
+        max_tokens: maxTokens,
         system,
         messages: [{ role: "user", content: user }],
       }),
@@ -1130,21 +243,22 @@ async function callModelRawText(apiKey, { system, user }) {
     return data.content?.[0]?.text || "";
   }
   if (provider === "openai") {
+    const body = {
+      model: "gpt-4.1-mini",
+      temperature: 0.7,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    };
+    if (json) body.response_format = { type: "json_object" };
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${apiKey}`,
       },
-      body: JSON.stringify({
-        model: "gpt-4.1-mini",
-        temperature: 0.7,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: system },
-          { role: "user", content: user },
-        ],
-      }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`OpenAI API error ${res.status}: ${await res.text()}`);
     const data = await res.json();
@@ -1842,10 +956,9 @@ export default function App() {
   const [output, setOutput] = useState(null);
   const [error, setError] = useState(null);
   const [fillLoading, setFillLoading] = useState(false);
-  const [fillStatus, setFillStatus] = useState("");
-  const outputRef = useRef(null);
+  const [fillStatus, setFillStatus] = useState("");  const outputRef = useRef(null);
   const hasSelectionInitialized = useRef(false);
-
+  const contractFileRef = useRef(null);
   // ── Gamification state ────────────────────────────────────────────────
   const [comboToasts, setComboToasts] = useState([]); // {key, label}
   const toastKeyRef = useRef(0);
@@ -1861,12 +974,227 @@ export default function App() {
   const lastScoreRef = useRef(null);
   const [scoreDelta, setScoreDelta] = useState(0);
 
+  // ── Wizard / view-mode state ──────────────────────────────────────────
+  const [viewMode, setViewMode] = useState(() => {
+    try { return loadViewMode(localStorage, "wizard"); } catch { return "wizard"; }
+  });
+  const [wizardStepIndex, setWizardStepIndex] = useState(() => {
+    try { return loadWizardState(localStorage).stepIndex || 0; } catch { return 0; }
+  });
+  const [draftInfo, setDraftInfo] = useState(null); // { selections, savedAt } | null
+  const draftCheckedRef = useRef(false);
+  const draftSaveTimer = useRef(null);
+
+  // Persist mode + step to localStorage.
+  useEffect(() => {
+    try { saveViewMode(viewMode, localStorage); } catch { /* noop */ }
+  }, [viewMode]);
+  useEffect(() => {
+    try {
+      const cur = loadWizardState(localStorage);
+      saveWizardState({ ...cur, stepIndex: wizardStepIndex }, localStorage);
+    } catch { /* noop */ }
+  }, [wizardStepIndex]);
+
+  // Detect a draft on mount and prompt the user.
+  useEffect(() => {
+    if (draftCheckedRef.current) return;
+    draftCheckedRef.current = true;
+    try {
+      const draft = loadWizardDraft(localStorage);
+      if (hasWizardDraft(draft)) {
+        const ws = loadWizardState(localStorage);
+        setDraftInfo({ selections: draft, savedAt: ws.lastSavedAt || 0 });
+      }
+    } catch { /* noop */ }
+  }, []);
+
+  // Autosave selections to a draft slot on every change (debounced).
+  useEffect(() => {
+    if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    draftSaveTimer.current = setTimeout(() => {
+      try { saveWizardDraft(selections || {}, localStorage); } catch { /* noop */ }
+    }, 400);
+    return () => {
+      if (draftSaveTimer.current) clearTimeout(draftSaveTimer.current);
+    };
+  }, [selections]);
+
+  // Built once: ordered wizard steps over the current LAYERS.
+  const wizardSteps = useMemo(() => buildWizardSteps(LAYERS), []);
+
+  // Render a single wizard step's body. Power mode renders everything
+  // inline; this callback is only used when viewMode === "wizard".
+  function renderWizardStep(step) {
+    if (step.kind === "preset") {
+      return (
+        <div
+          style={{
+            padding: "14px 16px",
+            border: `1px solid ${COLOR.border}`,
+            background: "rgba(138,92,246,0.05)",
+            borderRadius: "3px",
+          }}
+        >
+          <div
+            style={{
+              fontSize: "10px",
+              color: COLOR.purple,
+              letterSpacing: "3px",
+              marginBottom: "10px",
+            }}
+          >
+            // OPTIONAL — START FROM A PRESET
+          </div>
+          <div style={S.historyRow}>
+            <select
+              style={S.historySelect}
+              value={selectedPresetId}
+              onChange={(e) => setSelectedPresetId(e.target.value)}
+            >
+              <option value="">— choose a subgenre starting point —</option>
+              {PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              style={S.restoreBtn}
+              onClick={handleApplyPreset}
+              disabled={!selectedPresetId}
+            >
+              ▸ APPLY PRESET
+            </button>
+          </div>
+          {selectedPresetId && (
+            <div style={{ ...S.statusLine, marginTop: "8px" }}>
+              {findPreset(selectedPresetId)?.description}
+            </div>
+          )}
+          {presetStatus && (
+            <div style={{ ...S.statusLine, marginTop: "4px", color: COLOR.purpleLight }}>
+              {presetStatus}
+            </div>
+          )}
+          <div style={{ ...S.statusLine, marginTop: "10px", color: COLOR.dim }}>
+            You can skip this and pick everything by hand.
+          </div>
+        </div>
+      );
+    }
+
+    if (step.kind === "layer") {
+      const layerId = step.layerIds[0];
+      const layer = LAYERS.find((l) => l.id === layerId);
+      if (!layer) return null;
+      return (
+        <div>
+          <Layer
+            layer={layer}
+            selections={selections}
+            setSelection={setSelection}
+            open={true}
+            onToggle={() => {}}
+            fieldIndex={fieldIndex}
+          />
+          {layer.id === "mid" && (
+            <ProgressionLadder
+              selections={selections}
+              setPins={(pins) =>
+                setSelections((prev) => ({ ...prev, progressionPins: pins }))
+              }
+            />
+          )}
+          {layer.id === "protagonist" && (
+            <CompanionBuilder
+              selections={selections}
+              setCompanions={(ids) =>
+                setSelections((prev) => ({ ...prev, companions: ids }))
+              }
+            />
+          )}
+        </div>
+      );
+    }
+
+    // review
+    return (
+      <div>
+        <CoherenceMeter coherence={coherence} lastDelta={scoreDelta} />
+
+        {warnings.length > 0 && (
+          <div style={S.warnBox}>
+            <div style={S.warnTitle}>⚠ COMPATIBILITY WARNINGS ({warnings.length})</div>
+            {warnings.map((w, i) => (
+              <div key={i} style={S.warnItem}>→ {w}</div>
+            ))}
+          </div>
+        )}
+
+        {!ready && (
+          <div style={{ ...S.warnBox, borderColor: COLOR.border, background: "rgba(138,92,246,0.05)" }}>
+            <div style={{ ...S.warnTitle, color: COLOR.purpleSoft }}>◇ INCOMPLETE</div>
+            {missing.length > 0 && (
+              <div style={S.warnItem}>
+                Missing selections: {missing.length} required field
+                {missing.length === 1 ? "" : "s"} ({missing.join(", ")}).
+              </div>
+            )}
+            {!subplotOk && (
+              <div style={S.warnItem}>
+                Subplots: pick 2–4 (currently {(selections.subplots || []).length}).
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginTop: "16px" }}>
+          <label style={{ ...S.fieldLabel, marginTop: 0 }}>
+            User Notes (optional) — passed verbatim to the model
+          </label>
+          <textarea
+            style={S.notesTextarea}
+            value={userNotes}
+            onChange={(e) => setUserNotes(e.target.value)}
+            placeholder="Character names, settings, imagery, things to avoid, tone references…"
+          />
+        </div>
+
+        <div style={{ ...S.statusLine, marginTop: "10px", color: COLOR.dim }}>
+          The footer below has the GENERATE button. Other utilities (fill the
+          rest, dice, draft mode, export, share) live in POWER mode.
+        </div>
+      </div>
+    );
+  }
+
   // Memoized field index; used by Field to compute per-option conflict state.
   const fieldIndex = useMemo(() => buildFieldIndex(LAYERS), []);
 
   // Dev-time: warn if any option carries a tag not in the allow-list.
   useEffect(() => {
     assertKnownTags(LAYERS);
+  }, []);
+
+  // Auto-import a contract from #contract=... share link on first load.
+  useEffect(() => {
+    try {
+      const hash = window.location.hash || "";
+      const m = hash.match(/contract=([^&]+)/);
+      if (!m) return;
+      const c = fromShareHash(m[1]);
+      if (!c) return;
+      setSelections(c.selections || {});
+      if (typeof c.userNotes === "string") setUserNotes(c.userNotes);
+      setSelectionFileStatus(`Loaded contract from share link (id ${c.id.slice(0, 8)}…).`);
+      // Strip hash so a refresh doesn't re-apply it.
+      try {
+        history.replaceState(null, "", window.location.pathname + window.location.search);
+      } catch { /* noop */ }
+    } catch { /* noop */ }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -2401,6 +1729,78 @@ export default function App() {
     }
   }
 
+  // ── Contract I/O (Solo Author Cockpit) ──────────────────────────────
+  function currentContract() {
+    return createContract({
+      selections,
+      userNotes: userNotes || undefined,
+    });
+  }
+
+  function downloadBlob(filename, text, mime) {
+    const blob = new Blob([text], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function handleExportContractJson() {
+    try {
+      const c = currentContract();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      downloadBlob(`contract-${ts}.json`, serializeContract(c), "application/json");
+      setSelectionFileStatus("Exported contract JSON.");
+    } catch (e) {
+      setSelectionFileStatus(`Export failed: ${e.message || String(e)}`);
+    }
+  }
+
+  function handleExportContractMarkdown() {
+    try {
+      const c = currentContract();
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      downloadBlob(`contract-${ts}.md`, exportContractMarkdown(c), "text/markdown");
+      setSelectionFileStatus("Exported contract Markdown.");
+    } catch (e) {
+      setSelectionFileStatus(`Export failed: ${e.message || String(e)}`);
+    }
+  }
+
+  function handleImportContractFile(file) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onerror = () =>
+      setSelectionFileStatus("Import failed: could not read file.");
+    reader.onload = () => {
+      const { contract, errors } = parseContract(String(reader.result || ""));
+      if (errors.length || !contract) {
+        setSelectionFileStatus(`Import failed: ${errors.join(", ") || "invalid"}`);
+        return;
+      }
+      setSelections(contract.selections || {});
+      if (typeof contract.userNotes === "string") setUserNotes(contract.userNotes);
+      setSelectionFileStatus(`Imported contract (id ${contract.id.slice(0, 8)}…).`);
+    };
+    reader.readAsText(file);
+  }
+
+  async function handleCopyShareLink() {
+    try {
+      const c = currentContract();
+      const hash = toShareHash(c);
+      const url = `${window.location.origin}${window.location.pathname}#contract=${hash}`;
+      await navigator.clipboard.writeText(url);
+      setSelectionFileStatus("Share link copied to clipboard.");
+    } catch (e) {
+      setSelectionFileStatus(`Share link failed: ${e.message || String(e)}`);
+    }
+  }
+
   function formatHistoryLabel(entry, index) {
     const ts = entry?.timestamp ? new Date(entry.timestamp) : null;
     const readable = ts && !Number.isNaN(ts.valueOf())
@@ -2423,6 +1823,14 @@ export default function App() {
   return (
     <div style={S.root}>
       <GamifyStyles />
+      <PipelineCockpit
+        selections={selections}
+        userNotes={userNotes}
+        apiKey={apiKey}
+        callRawLLM={callModelRawText}
+        layers={LAYERS}
+        onApplyReverse={(mapped) => setSelections((prev) => ({ ...prev, ...mapped }))}
+      />
       <ComboToasts
         toasts={comboToasts}
         onDismiss={(key) => setComboToasts((prev) => prev.filter((t) => t.key !== key))}
@@ -2464,6 +1872,42 @@ export default function App() {
           </form>
         </div>
 
+        {draftInfo && (
+          <DraftRecoveryBanner
+            savedAt={draftInfo.savedAt}
+            onResume={() => {
+              applySelections(() => draftInfo.selections || {});
+              setDraftInfo(null);
+              setSelectionFileStatus("Resumed unsaved draft.");
+            }}
+            onDiscard={() => {
+              try { clearWizardDraft(localStorage); } catch { /* noop */ }
+              setDraftInfo(null);
+              setSelectionFileStatus("Discarded unsaved draft.");
+            }}
+          />
+        )}
+
+        <div style={{ display: "flex", justifyContent: "flex-end", margin: "0 0 12px" }}>
+          <ModeToggle mode={viewMode} onChange={setViewMode} />
+        </div>
+
+        {viewMode === "wizard" && (
+          <WizardShell
+            steps={wizardSteps}
+            stepIndex={wizardStepIndex}
+            onStepChange={setWizardStepIndex}
+            selections={selections}
+            renderStep={renderWizardStep}
+            canGenerate
+            generateDisabled={!ready || loading}
+            generateLabel={loading ? "◌ GENERATING…" : "▶ GENERATE SEED"}
+            onGenerate={handleGenerate}
+          />
+        )}
+
+        {viewMode === "power" && (
+        <>
         <div
           style={{
             marginTop: "16px",
@@ -2636,6 +2080,53 @@ export default function App() {
           >
             ↺ LOAD LAST SELECTION
           </button>
+          <button
+            type="button"
+            onClick={handleExportContractJson}
+            style={S.utilityBtn}
+            disabled={loading}
+            title="Download the current selections as a versioned contract.json"
+          >
+            ⬇ EXPORT (JSON)
+          </button>
+          <button
+            type="button"
+            onClick={handleExportContractMarkdown}
+            style={S.utilityBtn}
+            disabled={loading}
+            title="Download the current contract as a human-readable Markdown brief"
+          >
+            ⬇ EXPORT (MD)
+          </button>
+          <button
+            type="button"
+            onClick={() => contractFileRef.current?.click()}
+            style={S.utilityBtn}
+            disabled={loading}
+            title="Import a previously-saved contract.json"
+          >
+            ⬆ IMPORT
+          </button>
+          <button
+            type="button"
+            onClick={handleCopyShareLink}
+            style={S.utilityBtn}
+            disabled={loading}
+            title="Copy a shareable URL that encodes the current contract"
+          >
+            🔗 SHARE LINK
+          </button>
+          <input
+            ref={contractFileRef}
+            type="file"
+            accept="application/json,.json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              handleImportContractFile(f);
+              e.target.value = "";
+            }}
+          />
         </div>
         {fillStatus && (
           <div style={{ ...S.statusLine, color: COLOR.purpleLight }}>{fillStatus}</div>
@@ -2664,6 +2155,8 @@ export default function App() {
           </button>
         </div>
         <div style={S.statusLine}>{selectionFileStatus}</div>
+        </>
+        )}
 
         {error && (
           <div style={{ ...S.warnBox, marginTop: "16px" }}>
