@@ -250,10 +250,26 @@ function toIngest(state /*, input */) {
     fingerprint: state.currentFingerprint,
     audit: state.currentAudit,
   });
+  // Archive the completed chapter so the UI / exports can read it later.
+  // We never want to lose prose just because we advanced to the next chapter.
+  const archived = {
+    index: state.chapterIndex || (state.chapters?.length || 0) + 1,
+    scaffold: state.currentScaffold || null,
+    prose: state.currentProse || "",
+    audit: state.currentAudit || null,
+    fingerprint: state.currentFingerprint || null,
+    generatedAt: Date.now(),
+  };
+  const chapters = Array.isArray(state.chapters)
+    ? [...state.chapters.filter((c) => c.index !== archived.index), archived].sort(
+        (a, b) => a.index - b.index,
+      )
+    : [archived];
   return {
     ...state,
     phase: "ingest",
     bible,
+    chapters,
     lastFingerprint: state.currentFingerprint || state.lastFingerprint,
   };
 }

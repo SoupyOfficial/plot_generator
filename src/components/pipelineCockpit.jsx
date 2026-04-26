@@ -49,6 +49,7 @@ const COCKPIT_FONT = "'Courier New', Courier, monospace";
 
 const TABS = [
   { id: "pipeline", label: "PIPELINE" },
+  { id: "chapters", label: "CHAPTERS" },
   { id: "audit", label: "AUDIT" },
   { id: "reverse", label: "REVERSE" },
 ];
@@ -248,6 +249,30 @@ export function PipelineCockpit({
   const findings = audit ? collectFindings(audit) : [];
   const ledger = state?.series?.foreshadowLedger || [];
   const ledgerOpen = ledger.filter((e) => !e.paidOff).length;
+  const chapters = Array.isArray(state?.chapters) ? state.chapters : [];
+  const [expandedChapter, setExpandedChapter] = useState(null);
+
+  function copyChapter(ch) {
+    try {
+      navigator.clipboard?.writeText(formatChapterMarkdown(ch));
+      setStatusLine(`Copied chapter ${ch.index}.`);
+    } catch (e) {
+      setErr(`Copy failed: ${e.message || String(e)}`);
+    }
+  }
+
+  function downloadChapter(ch) {
+    triggerDownload(
+      `chapter-${String(ch.index).padStart(2, "0")}.md`,
+      formatChapterMarkdown(ch),
+    );
+  }
+
+  function downloadAllChapters() {
+    if (chapters.length === 0) return;
+    const all = chapters.map(formatChapterMarkdown).join("\n\n---\n\n");
+    triggerDownload("chapters.md", all);
+  }
   const fp = state?.currentFingerprint;
 
   if (!open) {
@@ -357,6 +382,110 @@ export function PipelineCockpit({
 
           {statusLine && <div style={cockpitStyles.status}>{statusLine}</div>}
           {err && <div style={cockpitStyles.error}>✗ {err}</div>}
+        </div>
+      )}
+
+      {tab === "chapters" && (
+        <div style={cockpitStyles.body}>
+          {chapters.length === 0 ? (
+            <div style={cockpitStyles.muted}>
+              No chapters yet. Run the pipeline through ingest to generate one.
+            </div>
+          ) : (
+            <>
+              <div style={cockpitStyles.btnRow}>
+                <button
+                  type="button"
+                  style={cockpitStyles.btnSecondary}
+                  onClick={downloadAllChapters}
+                  title="Download all chapters as a single Markdown file"
+                >
+                  ⬇ DOWNLOAD ALL
+                </button>
+                <span style={{ ...cockpitStyles.muted, marginLeft: 8 }}>
+                  {chapters.length} chapter{chapters.length === 1 ? "" : "s"} archived
+                </span>
+              </div>
+              <ul style={{ listStyle: "none", padding: 0, margin: "10px 0" }}>
+                {chapters.map((ch) => {
+                  const isOpen = expandedChapter === ch.index;
+                  const wc = countWords(ch.prose);
+                  const title =
+                    ch.scaffold?.title || ch.scaffold?.chapterTitle || `Chapter ${ch.index}`;
+                  return (
+                    <li
+                      key={ch.index}
+                      style={{
+                        border: `1px solid ${COCKPIT_COLOR.border}`,
+                        marginBottom: 6,
+                        background: COCKPIT_COLOR.panel,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setExpandedChapter(isOpen ? null : ch.index)}
+                        style={{
+                          ...cockpitStyles.tab,
+                          width: "100%",
+                          textAlign: "left",
+                          padding: "8px 10px",
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                        }}
+                      >
+                        <span>
+                          {isOpen ? "▼" : "▶"} CH {String(ch.index).padStart(2, "0")} · {title}
+                        </span>
+                        <span style={{ color: COCKPIT_COLOR.dim, fontSize: 10 }}>
+                          {wc} words
+                        </span>
+                      </button>
+                      {isOpen && (
+                        <div style={{ padding: "8px 10px", borderTop: `1px solid ${COCKPIT_COLOR.border}` }}>
+                          <div style={cockpitStyles.btnRow}>
+                            <button
+                              type="button"
+                              style={cockpitStyles.btnSecondary}
+                              onClick={() => copyChapter(ch)}
+                            >
+                              ⧉ COPY
+                            </button>
+                            <button
+                              type="button"
+                              style={cockpitStyles.btnSecondary}
+                              onClick={() => downloadChapter(ch)}
+                            >
+                              ⬇ .MD
+                            </button>
+                          </div>
+                          {ch.scaffold && (
+                            <details style={{ margin: "8px 0" }}>
+                              <summary style={{ color: COCKPIT_COLOR.dim, fontSize: 10, cursor: "pointer" }}>
+                                SCAFFOLD JSON
+                              </summary>
+                              <pre style={cockpitStyles.proseBlock}>
+                                {safeStringify(ch.scaffold)}
+                              </pre>
+                            </details>
+                          )}
+                          <pre style={cockpitStyles.proseBlock}>
+                            {ch.prose || "(no prose recorded)"}
+                          </pre>
+                          {ch.audit && (
+                            <div style={{ ...cockpitStyles.muted, marginTop: 6 }}>
+                              audit score {ch.audit.score?.toFixed?.(2) ?? "—"} ·{" "}
+                              {(ch.audit.findings || []).length} finding(s)
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </>
+          )}
         </div>
       )}
 
@@ -568,6 +697,55 @@ function formatVal(v) {
   return String(v);
 }
 
+function countWords(s) {
+  if (!s || typeof s !== "string") return 0;
+  return s.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function safeStringify(obj) {
+  try {
+    return JSON.stringify(obj, null, 2);
+  } catch {
+    return String(obj);
+  }
+}
+
+function formatChapterMarkdown(ch) {
+  if (!ch) return "";
+  const title = ch.scaffold?.title || ch.scaffold?.chapterTitle || `Chapter ${ch.index}`;
+  const heading = `# Chapter ${ch.index} · ${title}`;
+  const meta = [];
+  if (typeof ch.audit?.score === "number") {
+    meta.push(`audit score: ${ch.audit.score.toFixed(2)}`);
+  }
+  if (Array.isArray(ch.audit?.findings)) {
+    meta.push(`findings: ${ch.audit.findings.length}`);
+  }
+  meta.push(`words: ${countWords(ch.prose)}`);
+  if (ch.generatedAt) {
+    meta.push(`generated: ${new Date(ch.generatedAt).toISOString()}`);
+  }
+  const metaLine = meta.length ? `_${meta.join(" · ")}_\n\n` : "";
+  return `${heading}\n\n${metaLine}${ch.prose || ""}`;
+}
+
+function triggerDownload(filename, content) {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  try {
+    const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch {
+    /* noop */
+  }
+}
+
 // ---------------------------------------------------------------------------
 // styles
 // ---------------------------------------------------------------------------
@@ -757,6 +935,31 @@ const cockpitStyles = {
     padding: 8,
     margin: "8px 0",
     resize: "vertical",
+  },
+  btnSecondary: {
+    background: "transparent",
+    color: COCKPIT_COLOR.purpleSoft,
+    border: `1px solid ${COCKPIT_COLOR.border}`,
+    padding: "5px 9px",
+    fontFamily: COCKPIT_FONT,
+    fontSize: 10,
+    letterSpacing: 2,
+    cursor: "pointer",
+    borderRadius: 2,
+  },
+  proseBlock: {
+    background: "rgba(0,0,0,0.35)",
+    border: `1px solid ${COCKPIT_COLOR.border}`,
+    color: COCKPIT_COLOR.text,
+    padding: 10,
+    margin: "6px 0",
+    fontFamily: COCKPIT_FONT,
+    fontSize: 12,
+    lineHeight: 1.6,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    maxHeight: 380,
+    overflow: "auto",
   },
   diffRow: {
     border: `1px solid ${COCKPIT_COLOR.border}`,

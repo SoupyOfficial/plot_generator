@@ -137,6 +137,34 @@ describe("advance", () => {
     expect(s.phase).toBe("done");
   });
 
+  it("archives each completed chapter into state.chapters with its prose", () => {
+    let s = createPipelineState({ selections: sampleSelections });
+    s = runDeterministicPhases(s, {
+      arcs: { totalChapters: 2, targetArcCount: 2 },
+    });
+    // chapter 1 → ingest
+    s = advance(s); // scaffold
+    s = advance(s, { scaffold: { title: "One", chapter: 1 } });
+    s = advance(s, { prose: "Chapter one prose." });
+    s = advance(s); // ingest
+    expect(Array.isArray(s.chapters)).toBe(true);
+    expect(s.chapters).toHaveLength(1);
+    expect(s.chapters[0].index).toBe(1);
+    expect(s.chapters[0].prose).toBe("Chapter one prose.");
+    expect(s.chapters[0].audit).toBeTruthy();
+    // advance to chapter 2 and confirm chapter 1 prose is preserved
+    s = advance(s);
+    expect(s.currentProse).toBeNull();
+    expect(s.chapters[0].prose).toBe("Chapter one prose.");
+    s = advance(s); // scaffold
+    s = advance(s, { scaffold: { title: "Two", chapter: 2 } });
+    s = advance(s, { prose: "Chapter two prose." });
+    s = advance(s); // ingest
+    expect(s.chapters).toHaveLength(2);
+    expect(s.chapters[1].index).toBe(2);
+    expect(s.chapters[1].prose).toBe("Chapter two prose.");
+  });
+
   it("throws on unknown phase", () => {
     expect(() => advance({ phase: "??" })).toThrow(/unknown phase/);
   });
