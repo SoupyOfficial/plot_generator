@@ -46,6 +46,22 @@ const THEME_ARGUMENTS = {
     "Does your growth serve only you, and if so — is that enough?",
   "Truth vs Comfort":
     "Is understanding the system's real purpose worth shattering everything you believed?",
+  "Belonging vs Exceptionalism":
+    "Does standing out require leaving behind the people who made you?",
+  "Found Family vs Isolation":
+    "Can chosen bonds replace what was lost — or do they expose how alone you still are?",
+  "Becoming vs Returning":
+    "Should you keep climbing toward who you could be, or fight back to who you were?",
+  "Inheritance vs Self-Authorship":
+    "Is the legacy handed to you a foundation or a cage?",
+  "Duty vs Desire":
+    "When the role you owe and the life you want diverge, which do you abandon?",
+  "Legacy vs Reinvention":
+    "Is the version of you that succeeded still worth being?",
+  "Revenge vs Moving On":
+    "Does evening the ledger heal the wound or carve it deeper?",
+  "Tradition vs Innovation":
+    "Are the old rules wisdom worth preserving, or chains worth breaking?",
 };
 
 /**

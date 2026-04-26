@@ -268,3 +268,243 @@ Turns the tool from "fill 30 fields then generate" into "pick your pillars, coll
 - Full fine-tuning or custom model hosting
 - Non-LitRPG genres — the framework is genre-specific and that's a feature
 - Mobile-first redesign — desktop primary, mobile must work but not shine
+
+---
+
+# PART II — Story Bible & Long-Form Generation
+
+The earlier phases produce a **seed**. Phases 9–13 turn that seed into a
+**story bible** — a versioned, append-only document the writer commits to —
+and use the bible to drive **chapter-by-chapter prose generation**.
+
+Chapter is the right unit, not page: chapters are coherent narrative
+beats (~2.5–5k words for ProgFan serials), match how readers consume the
+genre, and fit comfortably in modern LLM context windows. "Page-by-page"
+generation would fragment context and lose continuity.
+
+## Phase 9 — Story Contract (foundation)
+
+**Goal:** Promote the current selections + generated brief into a
+versioned, exportable, importable artifact.
+
+```js
+type StoryContract = {
+  version: "1.0",
+  id: string,                 // stable uuid
+  createdAt: string,          // ISO
+  updatedAt: string,
+  pack: "litrpg-base",        // genre pack id (Phase 13)
+  selections: Record<FieldId, string | string[]>,
+  warnings: string[],         // validation snapshot at lock time
+  brief?: string,             // structured brief (Phase 2 output)
+  beats?: Beat[],             // 15-beat plan
+  themeArgument?: string,
+};
+```
+
+Operations:
+- `serializeContract(contract) -> string` (JSON)
+- `parseContract(string) -> { contract, errors }`
+- `exportMarkdown(contract) -> string` (human-readable contract doc)
+- `toShareHash(contract) -> string` / `fromShareHash(hash) -> contract` (URL fragment, base64)
+- `migrateContract(old) -> new` (handle future schema bumps)
+
+**UI integration:** Export button (JSON + Markdown), Import button, "Copy
+share link" — all add to App.jsx's existing controls.
+
+## Phase 10 — Reverse Mode (analyze prose → schema)
+
+**Goal:** Let users start from existing material instead of blank fields.
+
+- New textarea: "Paste your premise, synopsis, or chapter 1."
+- New button: "Analyze and fill schema."
+- LLM is given the LAYERS schema + the prose; returns a partial selections
+  object. User reviews field-by-field (same diff UI as Phase 7's
+  "Fill the rest with me").
+
+`src/lib/reverseEngineer.js`:
+- `buildReverseEngineerPrompt({ layers, prose })`
+- `parseReverseEngineerResponse(text, layers)` — same allow-list validation
+  as fillRest.
+- New: `diagnoseDrift({ contract, prose })` — given a current contract and
+  recent draft prose, flag where the draft has stopped honoring the
+  contract.
+
+## Phase 11 — Series Plan (per-book beats + foreshadow ledger)
+
+**Goal:** Lock the series-level structure that ProgFan stories drift on.
+
+```js
+type SeriesPlan = {
+  totalBooks: number | "open",
+  metaBeats: Beat[],            // 15 series-level beats spanning all books
+  books: BookPlan[],
+  foreshadowLedger: ForeshadowEntry[],
+};
+
+type BookPlan = {
+  index: number,                // 1-based
+  workingTitle?: string,
+  beatAnchors: { metaBeat: number; bookBeat: number }[],
+                                // which series-level beats this book honors
+  endTier?: string,             // power ceiling at end of book
+  promiseToPayOff: string[],    // ledger entry ids set up here
+  promisesPaidOff: string[],    // ledger entry ids retired here
+};
+
+type ForeshadowEntry = {
+  id: string,
+  plantedIn: { book: number; beat: number },
+  paysOffIn: { book: number; beat: number },
+  description: string,
+  status: "planted" | "reinforced" | "paid-off" | "broken",
+};
+```
+
+`src/lib/seriesPlan.js`:
+- `createSeriesPlan({ totalBooks })`
+- `addForeshadow(plan, entry)`, `payOffForeshadow(plan, id, where)`
+- `validateSeriesPlan(plan)` — flags: orphaned planted breadcrumbs (never
+  paid off), beat anchors out of order, books with no end-tier, etc.
+
+## Phase 12 — Story Bible (the long-term goal)
+
+The bible is **contract + series plan + characters + locations + lore +
+glossary + style guide**, all versioned together. This is the artifact
+that drives prose generation.
+
+```js
+type StoryBible = {
+  version: "1.0",
+  contract: StoryContract,
+  series: SeriesPlan,
+  characters: Character[],
+  locations: Location[],
+  factions: Faction[],
+  lore: LoreEntry[],            // worldbuilding facts
+  glossary: GlossaryEntry[],    // terms unique to this world
+  styleGuide: StyleGuide,       // POV, tense, voice rules, do/don'ts
+  systemRules: SystemRule[],    // hard mechanics that cannot be retconned
+  chapters: ChapterRecord[],    // history of generated chapters
+};
+```
+
+`src/lib/bible.js`:
+- `createBible(contract, series)` — empty bible from existing contract.
+- `addCharacter / addLocation / addFaction / addLore`
+- `serializeBible(bible) -> string`
+- `parseBible(string) -> { bible, errors }`
+- `exportBibleMarkdown(bible)` — human-readable canonical doc.
+- `validateBible(bible)` — cross-references characters used in beats vs.
+  characters defined; system rules vs. selections; etc.
+
+## Phase 13 — Chapter Planner (bible → prose)
+
+The bible feeds two prompts per chapter:
+
+**Pass 1 — Chapter scaffold:**
+Given the bible, the previous chapter's summary, and a beat range, the
+LLM proposes:
+- Chapter title
+- POV character
+- Setting
+- Goal / conflict / outcome (Yorke's "scene grid")
+- Foreshadow entries to plant or pay off
+- Characters present
+- ~5 sentence outline
+
+User reviews / edits. Scaffold is appended to the bible.
+
+**Pass 2 — Chapter prose:**
+Given the bible + scaffold + style guide + last chapter's final paragraph,
+the LLM drafts the chapter. Bible state is updated based on what
+happened (status of foreshadow entries, character relationship deltas,
+new lore items).
+
+`src/lib/chapterPlan.js`:
+- `buildChapterScaffoldPrompt({ bible, beatRange, previousChapter? })`
+- `parseChapterScaffold(text)`
+- `buildChapterProsePrompt({ bible, scaffold })`
+- `recordChapter(bible, { scaffold, prose, summary })` — updates bible.
+
+**Failure modes to design against:**
+- Context bloat: the bible + last chapter + scaffold can exceed 100k tokens
+  for long series. Solution: include only relevant subsets per pass
+  (characters present + locations referenced + active foreshadow +
+  rolling 3-chapter summary).
+- Continuity drift: solved by validation pass — after each chapter, run
+  `validateBible(bible)` to catch system-rule violations and out-of-
+  character moments.
+- Prose homogenization: enforce style-guide adherence by including a
+  "DO NOT" list with the prose prompt and varying chapter-level prompts
+  (different POV, different scene grid).
+
+## Phase 14 — Genre Packs (architecture)
+
+Extract `LAYERS` + presets + validators into a pack interface so the
+methodology can serve cozy mystery, romantasy, military SF, etc.
+
+```js
+type GenrePack = {
+  id: string,                   // "litrpg-base", "cozy-mystery", ...
+  label: string,
+  layers: Layer[],
+  presets: Preset[],
+  validators: ValidatorFn[],    // pack-specific cross-cutting rules
+  beatTemplate: Beat[],         // genre-specific 15-beat skeleton
+  systemDesign?: object,        // pack-specific archetype/resolution data
+};
+```
+
+LitRPG is one pack. Other packs slot in without touching core.
+
+## Phase 15 — Corpus & White-Space Finder
+
+- Reverse-engineer 50–100 known books → field vectors.
+- Coherence meter becomes empirical (probability mass) instead of
+  authorial-opinion.
+- Surface: "structurally sound + structurally rare" combinations =
+  white-space.
+
+## Suggested Roll-out Order (Part II)
+
+| Phase | Effort | Payoff | Blocks |
+|-------|--------|--------|--------|
+| 9. Story Contract | Small | Foundation; export/share | 11–13 |
+| 10. Reverse Mode | Small–Medium | Big audience expansion | none |
+| 11. Series Plan | Medium | Genre's #1 failure mode (drift) | 12 |
+| 12. Story Bible | Medium | Canonical source-of-truth | 13 |
+| 13. Chapter Planner | Larger | The actual writing tool | 12 |
+| 14. Genre Packs | Larger | Methodology generalization | none |
+| 15. Corpus | Largest | White-space discovery | 14 |
+
+**Recommended next sprint:** 9 + 10 + 11. Together they make the tool a
+"pre-draft contract + retrofit + series-drift-prevention" suite without
+yet committing to long-form generation. 12 + 13 follow once the contract
+and series shapes have stabilized in real use.
+
+
+---
+
+## Pipeline Spine (state-machine truth + LLM as renderer)
+
+Built as pure-function libs under `src/lib/`; co-located tests under `src/lib/__tests__/`.
+
+| Phase | Library | Purpose |
+| --- | --- | --- |
+| selections | (existing UI) | Layer choices |
+| contract | `contract.js` | Versioned StoryContract (export/import/share-link) |
+| series | `seriesPlan.js` | SeriesPlan + foreshadow ledger |
+| outline | `bookOutline.js` | Save-the-Cat / Four-Act / Hero-Journey beat templates |
+| arcs | `arcPlan.js` | Arc engines (tournament/dungeon/heist/�); chapter distribution |
+| beats | `beatSheet.js` | Per-chapter scene beats with pacing pattern |
+| scenes | `sceneGrid.js` | Goal/conflict/outcome grid + word targets |
+| bible | `bible.js` | Living truth: characters, locations, lore, style, chapters, rolling summary |
+| scaffold | `chapterPlan.js` (existing) | LLM prompt: chapter scaffold |
+| prose | `chapterPlan.js` (existing) | LLM prompt: chapter prose |
+| audit | `auditChapter.js` | Continuity / drift / foreshadow / power-curve / cast-bloat / voice / promise-debt |
+| voice | `voiceFingerprint.js` | Sentence/paragraph/POV/tense/dialogue/lexical-diversity metrics + drift score |
+| ingest | `ingestChapter.js` | Append chapter, link characters, reconcile foreshadow, roll up summary |
+| (orchestrator) | `pipeline.js` | `advance(state, input)` state machine + `runDeterministicPhases` |
+
+Status: full data-model spine green at **274/274 tests**. UI cockpit (Phase 9) and reverse-mode (Phase 10) UI work outstanding.
