@@ -268,6 +268,57 @@ describe.each(adapters)('$name - Interface Contract', ({ name, factory }) => {
 
       await cleanup();
     });
+
+    it('locks stage and writes to canon facet', async () => {
+      const project = await adapter.createProject({ title: 'Lock Test' });
+      testProjects.push(project.id);
+
+      // Lock seed stage
+      const seedArtifact = {
+        premise: 'A hero rises',
+        genre: 'Fantasy',
+        tone: 'hopeful',
+      };
+
+      const lockedSeed = await adapter.lockStage(project.id, 'seed', seedArtifact);
+      
+      expect(lockedSeed.status).toBe('locked');
+      expect(lockedSeed.lockedAt).toBeInstanceOf(Date);
+      expect(lockedSeed.artifact).toEqual(seedArtifact);
+      expect(lockedSeed.version).toBe(1);
+
+      // Verify canon premise was written
+      const canonPremise = await adapter.getCanon('premise', project.id);
+      expect(canonPremise).toBeTruthy();
+      expect(canonPremise.premise).toBe('A hero rises');
+      expect(canonPremise.genre).toBe('Fantasy');
+      expect(canonPremise.tone).toBe('hopeful');
+
+      // Lock promise stage
+      const promiseArtifact = {
+        protagonist: 'Reluctant farm boy',
+        want: 'Save his village',
+        obstacle: 'Powerful dark lord',
+        stakes: 'Village will be destroyed',
+        irony: 'The dark lord is his father',
+        endingShape: 'bittersweet',
+      };
+
+      const lockedPromise = await adapter.lockStage(project.id, 'promise', promiseArtifact);
+      
+      expect(lockedPromise.status).toBe('locked');
+      expect(lockedPromise.artifact).toEqual(promiseArtifact);
+      expect(lockedPromise.version).toBe(1);
+
+      // Verify canon promise was written
+      const canonPromise = await adapter.getCanon('promise', project.id);
+      expect(canonPromise).toBeTruthy();
+      expect(canonPromise.protagonist).toBe('Reluctant farm boy');
+      expect(canonPromise.want).toBe('Save his village');
+      expect(canonPromise.endingShape).toBe('bittersweet');
+
+      await cleanup();
+    });
   });
 
   describe('Chapters', () => {

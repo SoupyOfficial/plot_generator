@@ -16,6 +16,7 @@ import { LAYERS } from "../../data/layers.js";
 import { computeCoherence } from "../../lib/coherence.js";
 import { detectCombos, newlyTriggered } from "../../lib/combos.js";
 import { CoherenceMeter, ComboToasts } from "../gamify.jsx";
+import { generatePromiseCandidates } from "../../lib/promise.js";
 
 const DEBOUNCE_MS = 250;
 
@@ -92,6 +93,115 @@ const S = {
     border: `1px solid ${COLOR.border}`,
     borderRadius: "4px",
   },
+  advancedCard: {
+    padding: "14px 16px",
+    border: `1px solid ${COLOR.border}`,
+    background: "rgba(138,92,246,0.05)",
+    borderRadius: "3px",
+    marginBottom: "24px",
+  },
+  advancedHeader: {
+    fontSize: "10px",
+    color: COLOR.purple,
+    letterSpacing: "3px",
+    marginBottom: "10px",
+    cursor: "pointer",
+    userSelect: "none",
+  },
+  advancedOptions: {
+    display: "flex",
+    gap: "16px",
+    alignItems: "center",
+    marginTop: "12px",
+  },
+  optionGroup: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  seedBox: {
+    padding: "12px",
+    border: `1px solid ${COLOR.border}`,
+    background: "rgba(0,0,0,0.2)",
+    borderRadius: "3px",
+    marginBottom: "12px",
+    fontSize: "11px",
+    color: COLOR.muted,
+  },
+  candidateGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: "12px",
+    marginTop: "12px",
+  },
+  candidateCard: {
+    padding: "12px",
+    border: `1px solid ${COLOR.border}`,
+    background: "rgba(0,0,0,0.2)",
+    borderRadius: "3px",
+    cursor: "pointer",
+    transition: "all 0.2s",
+  },
+  candidateCardPicked: {
+    borderColor: COLOR.purpleLight,
+    background: "rgba(138,92,246,0.15)",
+  },
+  candidateText: {
+    fontSize: "11px",
+    color: COLOR.text,
+    marginBottom: "6px",
+    lineHeight: 1.4,
+  },
+  candidateTags: {
+    display: "flex",
+    gap: "4px",
+    flexWrap: "wrap",
+    marginBottom: "8px",
+  },
+  candidateTag: {
+    padding: "2px 6px",
+    fontSize: "9px",
+    background: "rgba(138,92,246,0.2)",
+    color: COLOR.purpleLight,
+    borderRadius: "2px",
+    letterSpacing: "1px",
+  },
+  generateBtn: {
+    padding: "10px 20px",
+    fontSize: "12px",
+    fontWeight: "600",
+    fontFamily: "'Courier New', Courier, monospace",
+    background: COLOR.purple,
+    color: "#fff",
+    border: "none",
+    borderRadius: "2px",
+    cursor: "pointer",
+    letterSpacing: "1px",
+    width: "100%",
+  },
+  pickBtn: {
+    padding: "6px 12px",
+    fontSize: "10px",
+    fontWeight: "600",
+    fontFamily: "'Courier New', Courier, monospace",
+    background: "rgba(138,92,246,0.3)",
+    color: COLOR.text,
+    border: `1px solid ${COLOR.border}`,
+    borderRadius: "2px",
+    cursor: "pointer",
+    letterSpacing: "1px",
+    width: "100%",
+  },
+  historySelect: {
+    flex: 1,
+    padding: "8px 10px",
+    fontSize: "13px",
+    fontFamily: "'Courier New', Courier, monospace",
+    background: "rgba(0,0,0,0.3)",
+    border: `1px solid ${COLOR.border}`,
+    borderRadius: "2px",
+    color: COLOR.text,
+  },
 };
 
 /**
@@ -110,6 +220,16 @@ export function L2Promise({ storage, projectId, onLock }) {
   const toastKeyRef = useRef(0);
   const saveTimerRef = useRef(null);
   const lastCombosRef = useRef(new Set());
+
+  // Candidate generation state
+  const [seedArtifact, setSeedArtifact] = useState(null);
+  const [candidates, setCandidates] = useState([]);
+  const [selectedCandidateId, setSelectedCandidateId] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [stakesMagnitude, setStakesMagnitude] = useState("medium");
+  const [endingShape, setEndingShape] = useState("bittersweet");
+  const [useLive, setUseLive] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // Build field index for conflict detection
   const fieldIndex = useMemo(() => buildFieldIndex(LAYERS), []);
@@ -141,16 +261,22 @@ export function L2Promise({ storage, projectId, onLock }) {
     }
   }, [selections]);
 
-  // Load stage data from storage on mount
+  // Load stage data and locked seed from storage on mount
   useEffect(() => {
     if (!storage || !projectId) return;
 
     async function loadStage() {
       setLoading(true);
       try {
-        const stage = await storage.getStage(projectId, "promise");
+        const stage = await storage.getStage("promise", projectId);
         if (stage && stage.artifact && typeof stage.artifact === "object") {
           setSelections(stage.artifact.selections || {});
+        }
+
+        // Load locked seed from canon premise
+        const canonPremise = await storage.getCanon('premise', projectId);
+        if (canonPremise) {
+          setSeedArtifact(canonPremise);
         }
       } catch (err) {
         console.error("Failed to load L2 promise stage:", err);
@@ -172,9 +298,10 @@ export function L2Promise({ storage, projectId, onLock }) {
 
     saveTimerRef.current = setTimeout(async () => {
       try {
-        await storage.saveStage(projectId, "promise", {
-          selections,
-          savedAt: Date.now(),
+        await storage.saveStage("promise", {
+          projectId,
+          version: 'latest',
+          artifact: { selections },
         });
       } catch (err) {
         console.error("Failed to auto-save L2 promise:", err);
@@ -195,18 +322,74 @@ export function L2Promise({ storage, projectId, onLock }) {
   async function handleLockStage() {
     if (!storage || !projectId) return;
 
+    // Get the picked candidate artifact
+    const pickedCandidate = candidates.find(c => c.id === selectedCandidateId);
+    if (!pickedCandidate) {
+      alert("✗ Please pick a promise candidate before locking.");
+      return;
+    }
+
     try {
-      const artifact = {
-        selections,
-        coherence,
-        lockedAt: Date.now(),
-      };
-      await storage.lockStage(projectId, "promise", artifact);
-      onLock?.("promise", artifact);
+      await storage.lockStage(projectId, "promise", pickedCandidate.artifact);
+      onLock?.("promise", pickedCandidate.artifact);
       alert("✓ L2 Promise locked. Canon snapshot saved.");
     } catch (err) {
       console.error("Failed to lock L2 promise:", err);
       alert("✗ Failed to lock stage. See console for details.");
+    }
+  }
+
+  // Generate promise candidates
+  async function handleGenerateCandidates() {
+    if (!storage || !projectId) return;
+
+    if (!seedArtifact) {
+      alert("✗ No locked seed found. Please complete L1 first.");
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const apiKey = useLive ? import.meta.env.VITE_LLM_API_KEY : null;
+      
+      const generated = await generatePromiseCandidates(seedArtifact, selections, {
+        storage,
+        projectId,
+        stakesMagnitude,
+        endingShape,
+        apiKey,
+        useLive,
+      });
+
+      // Save candidates to database
+      const savedCandidates = [];
+      for (const candidate of generated) {
+        const saved = await storage.saveCandidate({
+          projectId,
+          stageKey: 'promise',
+          artifact: candidate.artifact,
+        });
+        savedCandidates.push(saved);
+      }
+
+      setCandidates(savedCandidates);
+    } catch (err) {
+      console.error("Failed to generate promise candidates:", err);
+      alert(`✗ Generation failed: ${err.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  // Pick a candidate
+  async function handlePickCandidate(candidateId) {
+    if (!storage) return;
+
+    try {
+      await storage.pickCandidate(candidateId);
+      setSelectedCandidateId(candidateId);
+    } catch (err) {
+      console.error("Failed to pick candidate:", err);
     }
   }
 
@@ -247,6 +430,118 @@ export function L2Promise({ storage, projectId, onLock }) {
         seed in L3. This layer is informational only.
       </div>
 
+      {/* Advanced Options — Candidate Generation */}
+      <div style={S.advancedCard}>
+        <div style={S.advancedHeader} onClick={() => setAdvancedOpen(!advancedOpen)}>
+          {advancedOpen ? "▼" : "▶"} ADVANCED OPTIONS — GENERATE PROMISE CANDIDATES
+        </div>
+        {advancedOpen && (
+          <>
+            {/* Show locked seed artifact */}
+            {seedArtifact && (
+              <div style={S.seedBox}>
+                <strong style={{ color: COLOR.purpleLight }}>Locked Seed (L1):</strong>
+                <br />
+                {seedArtifact.premise}
+                <br />
+                <span style={{ fontSize: "10px", color: COLOR.dim }}>
+                  {seedArtifact.genre} • {seedArtifact.tone}
+                </span>
+              </div>
+            )}
+
+            {!seedArtifact && (
+              <div style={S.seedBox}>
+                <strong style={{ color: COLOR.purpleLight }}>⚠️ No locked seed found</strong>
+                <br />
+                Please complete L1 Seed stage first.
+              </div>
+            )}
+
+            <div style={S.advancedOptions}>
+              <div style={S.optionGroup}>
+                <label style={{ fontSize: "11px", color: COLOR.muted }}>Stakes:</label>
+                <select
+                  style={S.historySelect}
+                  value={stakesMagnitude}
+                  onChange={(e) => setStakesMagnitude(e.target.value)}
+                >
+                  <option value="low">Low</option>
+                  <option value="medium">Medium</option>
+                  <option value="high">High</option>
+                </select>
+              </div>
+              <div style={S.optionGroup}>
+                <label style={{ fontSize: "11px", color: COLOR.muted }}>Ending:</label>
+                <select
+                  style={S.historySelect}
+                  value={endingShape}
+                  onChange={(e) => setEndingShape(e.target.value)}
+                >
+                  <option value="tragic">Tragic</option>
+                  <option value="bittersweet">Bittersweet</option>
+                  <option value="hopeful">Hopeful</option>
+                </select>
+              </div>
+              <div style={S.optionGroup}>
+                <input
+                  type="checkbox"
+                  checked={useLive}
+                  onChange={(e) => setUseLive(e.target.checked)}
+                  id="useLiveCheckboxPromise"
+                />
+                <label htmlFor="useLiveCheckboxPromise" style={{ fontSize: "11px", color: useLive ? COLOR.purpleLight : COLOR.muted }}>
+                  🔴 LIVE LLM
+                </label>
+              </div>
+            </div>
+            <button
+              type="button"
+              style={{ ...S.generateBtn, marginTop: "12px" }}
+              onClick={handleGenerateCandidates}
+              disabled={generating || !seedArtifact}
+            >
+              {generating ? "⏳ GENERATING..." : "✨ GENERATE 3 CANDIDATES"}
+            </button>
+
+            {/* Candidate browser */}
+            {candidates.length > 0 && (
+              <div style={S.candidateGrid}>
+                {candidates.map((candidate) => (
+                  <div
+                    key={candidate.id}
+                    style={{
+                      ...S.candidateCard,
+                      ...(candidate.id === selectedCandidateId ? S.candidateCardPicked : {}),
+                    }}
+                  >
+                    <div style={S.candidateText}>
+                      <strong>{candidate.artifact.protagonist}</strong>
+                    </div>
+                    <div style={S.candidateText}>
+                      Wants: {candidate.artifact.want}
+                    </div>
+                    <div style={S.candidateText}>
+                      Obstacle: {candidate.artifact.obstacle}
+                    </div>
+                    <div style={S.candidateTags}>
+                      <span style={S.candidateTag}>{candidate.artifact.endingShape}</span>
+                    </div>
+                    <button
+                      type="button"
+                      style={S.pickBtn}
+                      onClick={() => handlePickCandidate(candidate.id)}
+                    >
+                      {candidate.id === selectedCandidateId ? "✓ PICKED" : "PICK"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {/* Layer panels */}
       {l2Layers.map((layer) => {
         // Skip beats layer (informational only, shown in info box above)
@@ -279,8 +574,17 @@ export function L2Promise({ storage, projectId, onLock }) {
         <button type="button" style={S.btnSecondary} onClick={() => setSelections({})}>
           CLEAR ALL
         </button>
-        <button type="button" style={S.btnPrimary} onClick={handleLockStage}>
-          🔒 LOCK PROMISE STAGE
+        <button
+          type="button"
+          style={{
+            ...S.btnPrimary,
+            opacity: selectedCandidateId ? 1 : 0.5,
+            cursor: selectedCandidateId ? "pointer" : "not-allowed",
+          }}
+          onClick={handleLockStage}
+          disabled={!selectedCandidateId}
+        >
+          🔒 LOCK & ADVANCE TO L3
         </button>
       </div>
     </div>

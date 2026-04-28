@@ -193,6 +193,47 @@ export function createLibSQLAdapter(config = {}) {
           .orderBy(desc(table.version));
       },
 
+      async lockStage(projectId, stageKey, artifact) {
+        await ensureMigrated();
+        
+        // Determine latest version
+        const existing = await this.listStageVersions(stageKey, projectId);
+        const latestVersion = existing.length > 0 ? existing[0].version : 0;
+        const newVersion = latestVersion + 1;
+
+        // Save stage with locked status
+        const lockedStage = await this.saveStage(stageKey, {
+          projectId,
+          version: newVersion,
+          status: 'locked',
+          artifact,
+          generatedAt: new Date(),
+          lockedAt: new Date(),
+        });
+
+        // Write to canon facet based on stage
+        if (stageKey === 'seed') {
+          await this.saveCanonFacet('premise', projectId, {
+            premise: artifact.premise,
+            genre: artifact.genre,
+            tone: artifact.tone,
+            lockedAt: new Date(),
+          });
+        } else if (stageKey === 'promise') {
+          await this.saveCanonFacet('promise', projectId, {
+            protagonist: artifact.protagonist,
+            want: artifact.want,
+            obstacle: artifact.obstacle,
+            stakes: artifact.stakes,
+            irony: artifact.irony || '',
+            endingShape: artifact.endingShape || 'bittersweet',
+            lockedAt: new Date(),
+          });
+        }
+
+        return lockedStage;
+      },
+
       // Chapter operations
       async saveChapter(data) {
         await ensureMigrated();

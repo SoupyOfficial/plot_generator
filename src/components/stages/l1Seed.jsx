@@ -20,6 +20,7 @@ import { detectCombos, newlyTriggered } from "../../lib/combos.js";
 import { CoherenceMeter, ComboToasts } from "../gamify.jsx";
 import { CompanionBuilder } from "../gamify.jsx";
 import { ProgressionLadder } from "../gamify.jsx";
+import { generateSeedCandidates } from "../../lib/seed.js";
 
 const DEBOUNCE_MS = 250;
 
@@ -131,6 +132,96 @@ const S = {
     border: `1px solid ${COLOR.border}`,
     borderRadius: "4px",
   },
+  advancedCard: {
+    padding: "14px 16px",
+    border: `1px solid ${COLOR.border}`,
+    background: "rgba(138,92,246,0.05)",
+    borderRadius: "3px",
+    marginBottom: "24px",
+  },
+  advancedHeader: {
+    fontSize: "10px",
+    color: COLOR.purple,
+    letterSpacing: "3px",
+    marginBottom: "10px",
+    cursor: "pointer",
+    userSelect: "none",
+  },
+  advancedOptions: {
+    display: "flex",
+    gap: "16px",
+    alignItems: "center",
+    marginTop: "12px",
+  },
+  optionGroup: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  candidateGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, 1fr)",
+    gap: "12px",
+    marginTop: "12px",
+  },
+  candidateCard: {
+    padding: "12px",
+    border: `1px solid ${COLOR.border}`,
+    background: "rgba(0,0,0,0.2)",
+    borderRadius: "3px",
+    cursor: "pointer",
+    transition: "all 0.2s",
+  },
+  candidateCardPicked: {
+    borderColor: COLOR.purpleLight,
+    background: "rgba(138,92,246,0.15)",
+  },
+  candidatePremise: {
+    fontSize: "12px",
+    color: COLOR.text,
+    marginBottom: "8px",
+    lineHeight: 1.4,
+  },
+  candidateTags: {
+    display: "flex",
+    gap: "4px",
+    flexWrap: "wrap",
+    marginBottom: "8px",
+  },
+  candidateTag: {
+    padding: "2px 6px",
+    fontSize: "9px",
+    background: "rgba(138,92,246,0.2)",
+    color: COLOR.purpleLight,
+    borderRadius: "2px",
+    letterSpacing: "1px",
+  },
+  generateBtn: {
+    padding: "10px 20px",
+    fontSize: "12px",
+    fontWeight: "600",
+    fontFamily: "'Courier New', Courier, monospace",
+    background: COLOR.purple,
+    color: "#fff",
+    border: "none",
+    borderRadius: "2px",
+    cursor: "pointer",
+    letterSpacing: "1px",
+    width: "100%",
+  },
+  pickBtn: {
+    padding: "6px 12px",
+    fontSize: "10px",
+    fontWeight: "600",
+    fontFamily: "'Courier New', Courier, monospace",
+    background: "rgba(138,92,246,0.3)",
+    color: COLOR.text,
+    border: `1px solid ${COLOR.border}`,
+    borderRadius: "2px",
+    cursor: "pointer",
+    letterSpacing: "1px",
+    width: "100%",
+  },
 };
 
 /**
@@ -151,6 +242,14 @@ export function L1Seed({ storage, projectId, onLock }) {
   const toastKeyRef = useRef(0);
   const saveTimerRef = useRef(null);
   const lastCombosRef = useRef(new Set());
+
+  // Candidate generation state
+  const [candidates, setCandidates] = useState([]);
+  const [selectedCandidateId, setSelectedCandidateId] = useState(null);
+  const [generating, setGenerating] = useState(false);
+  const [toneLean, setToneLean] = useState("balanced");
+  const [useLive, setUseLive] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
 
   // Build field index for conflict detection
   const fieldIndex = useMemo(() => buildFieldIndex(LAYERS), []);
@@ -189,7 +288,7 @@ export function L1Seed({ storage, projectId, onLock }) {
     async function loadStage() {
       setLoading(true);
       try {
-        const stage = await storage.getStage(projectId, "seed");
+        const stage = await storage.getStage("seed", projectId);
         if (stage && stage.artifact && typeof stage.artifact === "object") {
           setSelections(stage.artifact.selections || {});
         }
@@ -213,9 +312,10 @@ export function L1Seed({ storage, projectId, onLock }) {
 
     saveTimerRef.current = setTimeout(async () => {
       try {
-        await storage.saveStage(projectId, "seed", {
-          selections,
-          savedAt: Date.now(),
+        await storage.saveStage("seed", {
+          projectId,
+          version: 'latest',
+          artifact: { selections },
         });
       } catch (err) {
         console.error("Failed to auto-save L1 seed:", err);
@@ -249,18 +349,68 @@ export function L1Seed({ storage, projectId, onLock }) {
   async function handleLockStage() {
     if (!storage || !projectId) return;
 
+    // Get the picked candidate artifact
+    const pickedCandidate = candidates.find(c => c.id === selectedCandidateId);
+    if (!pickedCandidate) {
+      alert("✗ Please pick a seed candidate before locking.");
+      return;
+    }
+
     try {
-      const artifact = {
-        selections,
-        coherence,
-        lockedAt: Date.now(),
-      };
-      await storage.lockStage(projectId, "seed", artifact);
-      onLock?.("seed", artifact);
+      await storage.lockStage(projectId, "seed", pickedCandidate.artifact);
+      onLock?.("seed", pickedCandidate.artifact);
       alert("✓ L1 Seed locked. Canon snapshot saved.");
     } catch (err) {
       console.error("Failed to lock L1 seed:", err);
       alert("✗ Failed to lock stage. See console for details.");
+    }
+  }
+
+  // Generate seed candidates
+  async function handleGenerateCandidates() {
+    if (!storage || !projectId) return;
+
+    setGenerating(true);
+    try {
+      const apiKey = useLive ? import.meta.env.VITE_LLM_API_KEY : null;
+      
+      const generated = await generateSeedCandidates(selections, {
+        storage,
+        projectId,
+        toneLean,
+        apiKey,
+        useLive,
+      });
+
+      // Save candidates to database
+      const savedCandidates = [];
+      for (const candidate of generated) {
+        const saved = await storage.saveCandidate({
+          projectId,
+          stageKey: 'seed',
+          artifact: candidate.artifact,
+        });
+        savedCandidates.push(saved);
+      }
+
+      setCandidates(savedCandidates);
+    } catch (err) {
+      console.error("Failed to generate seed candidates:", err);
+      alert(`✗ Generation failed: ${err.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  // Pick a candidate
+  async function handlePickCandidate(candidateId) {
+    if (!storage) return;
+
+    try {
+      await storage.pickCandidate(candidateId);
+      setSelectedCandidateId(candidateId);
+    } catch (err) {
+      console.error("Failed to pick candidate:", err);
     }
   }
 
@@ -328,6 +478,78 @@ export function L1Seed({ storage, projectId, onLock }) {
         </div>
       </div>
 
+      {/* Advanced Options — Candidate Generation */}
+      <div style={S.advancedCard}>
+        <div style={S.advancedHeader} onClick={() => setAdvancedOpen(!advancedOpen)}>
+          {advancedOpen ? "▼" : "▶"} ADVANCED OPTIONS — GENERATE SEED CANDIDATES
+        </div>
+        {advancedOpen && (
+          <>
+            <div style={S.advancedOptions}>
+              <div style={S.optionGroup}>
+                <label style={{ fontSize: "11px", color: COLOR.muted }}>Tone Lean:</label>
+                <select
+                  style={S.historySelect}
+                  value={toneLean}
+                  onChange={(e) => setToneLean(e.target.value)}
+                >
+                  <option value="darker">Darker</option>
+                  <option value="balanced">Balanced</option>
+                  <option value="lighter">Lighter</option>
+                </select>
+              </div>
+              <div style={S.optionGroup}>
+                <input
+                  type="checkbox"
+                  checked={useLive}
+                  onChange={(e) => setUseLive(e.target.checked)}
+                  id="useLiveCheckbox"
+                />
+                <label htmlFor="useLiveCheckbox" style={{ fontSize: "11px", color: useLive ? COLOR.purpleLight : COLOR.muted }}>
+                  🔴 LIVE LLM
+                </label>
+              </div>
+            </div>
+            <button
+              type="button"
+              style={{ ...S.generateBtn, marginTop: "12px" }}
+              onClick={handleGenerateCandidates}
+              disabled={generating}
+            >
+              {generating ? "⏳ GENERATING..." : "✨ GENERATE 3 CANDIDATES"}
+            </button>
+
+            {/* Candidate browser */}
+            {candidates.length > 0 && (
+              <div style={S.candidateGrid}>
+                {candidates.map((candidate) => (
+                  <div
+                    key={candidate.id}
+                    style={{
+                      ...S.candidateCard,
+                      ...(candidate.id === selectedCandidateId ? S.candidateCardPicked : {}),
+                    }}
+                  >
+                    <div style={S.candidatePremise}>{candidate.artifact.premise}</div>
+                    <div style={S.candidateTags}>
+                      <span style={S.candidateTag}>{candidate.artifact.genre}</span>
+                      <span style={S.candidateTag}>{candidate.artifact.tone}</span>
+                    </div>
+                    <button
+                      type="button"
+                      style={S.pickBtn}
+                      onClick={() => handlePickCandidate(candidate.id)}
+                    >
+                      {candidate.id === selectedCandidateId ? "✓ PICKED" : "PICK"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
       {/* Layer panels */}
       {l1Layers.map((layer) => (
         <Layer
@@ -368,8 +590,17 @@ export function L1Seed({ storage, projectId, onLock }) {
         <button type="button" style={S.btnSecondary} onClick={() => setSelections({})}>
           CLEAR ALL
         </button>
-        <button type="button" style={S.btnPrimary} onClick={handleLockStage}>
-          🔒 LOCK SEED STAGE
+        <button
+          type="button"
+          style={{
+            ...S.btnPrimary,
+            opacity: selectedCandidateId ? 1 : 0.5,
+            cursor: selectedCandidateId ? "pointer" : "not-allowed",
+          }}
+          onClick={handleLockStage}
+          disabled={!selectedCandidateId}
+        >
+          🔒 LOCK & ADVANCE TO L2
         </button>
       </div>
     </div>

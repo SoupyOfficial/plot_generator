@@ -57,6 +57,10 @@ export function createServerAdapter(config = {}) {
       notImplemented('listStageVersions');
     },
 
+    async lockStage(projectId, stageKey, artifact) {
+      notImplemented('lockStage');
+    },
+
     // Chapter operations
     async saveChapter(data) {
       notImplemented('saveChapter');
