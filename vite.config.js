@@ -236,5 +236,7 @@ export default defineConfig({
   test: {
     // Keep Vitest focused on unit tests; Playwright owns tests/e2e.
     exclude: ["**/node_modules/**", "**/dist/**", "tests/e2e/**"],
+    setupFiles: ["./src/lib/__tests__/setup.js"],
+    environment: "jsdom",
   },
 });

@@ -38,7 +38,7 @@ const W_COLOR = {
 const W_FONT = "'Courier New', Courier, monospace";
 
 /**
- * Segmented control: WIZARD ↔ POWER. Stateless.
+ * Segmented control: WIZARD ↔ POWER ↔ STAGEFLOW. Stateless.
  */
 export function ModeToggle({ mode, onChange }) {
   return (
@@ -46,6 +46,7 @@ export function ModeToggle({ mode, onChange }) {
       {[
         { id: "wizard", label: "WIZARD" },
         { id: "power", label: "POWER" },
+        { id: "stageflow", label: "STAGEFLOW" },
       ].map((m) => (
         <button
           key={m.id}

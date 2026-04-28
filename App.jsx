@@ -64,6 +64,14 @@ import {
   ModeToggle,
   DraftRecoveryBanner,
 } from "./src/components/wizard.jsx";
+import { StageFlow } from "./src/components/stageFlow.jsx";
+import { ProjectPicker } from "./src/components/projectPicker.jsx";
+import { L1Seed } from "./src/components/stages/l1Seed.jsx";
+import { L2Promise } from "./src/components/stages/l2Promise.jsx";
+import { L3ShortStory } from "./src/components/stages/l3ShortStory.jsx";
+import { L4Novella } from "./src/components/stages/l4Novella.jsx";
+import { L5Novel } from "./src/components/stages/l5Novel.jsx";
+import { L6Chapters } from "./src/components/stages/l6Chapters.jsx";
 import {
   buildSteps as buildWizardSteps,
   loadDraft as loadWizardDraft,
@@ -89,6 +97,7 @@ import {
   buildReverseEngineerPrompt,
   parseReverseEngineerResponse,
 } from "./src/lib/reverseEngineer.js";
+import { createStorage } from "./src/lib/storage/index.js";
 
 // ============================================================================
 // COMPONENT DATA — moved to ./src/data/layers.js (Phase 14 prep).
@@ -940,6 +949,42 @@ function Layer({ layer, selections, setSelection, open, onToggle, fieldIndex }) 
 // ============================================================================
 
 export default function App() {
+  // ── Storage adapter (for multi-project StageFlow mode) ────────────────
+  const [storageAdapter, setStorageAdapter] = useState(null);
+  
+  useEffect(() => {
+    // Initialize storage adapter asynchronously (lazy-loads drizzle-orm only when needed)
+    createStorage()
+      .then(adapter => setStorageAdapter(adapter))
+      .catch(err => {
+        console.error("Failed to create storage adapter:", err);
+        setStorageAdapter(null);
+      });
+  }, []);
+
+  // ── Project ID state (for StageFlow mode) ─────────────────────────────
+  const [currentProjectId, setCurrentProjectId] = useState(() => {
+    try {
+      return localStorage.getItem("stageflow:current-project") || null;
+    } catch {
+      return null;
+    }
+  });
+
+  // Persist current project ID to localStorage
+  useEffect(() => {
+    if (currentProjectId) {
+      try {
+        localStorage.setItem("stageflow:current-project", currentProjectId);
+      } catch { /* noop */ }
+    } else {
+      try {
+        localStorage.removeItem("stageflow:current-project");
+      } catch { /* noop */ }
+    }
+  }, [currentProjectId]);
+
+  // ── Existing state ─────────────────────────────────────────────────────
   const [selections, setSelections] = useState({});
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [presetStatus, setPresetStatus] = useState("");
@@ -2156,6 +2201,46 @@ export default function App() {
         </div>
         <div style={S.statusLine}>{selectionFileStatus}</div>
         </>
+        )}
+
+        {viewMode === "stageflow" && storageAdapter && (
+          <StageFlow
+            storage={storageAdapter}
+            currentProjectId={currentProjectId}
+            onProjectChange={setCurrentProjectId}
+            renderStage={(stage, props) => {
+              // Map stage IDs to stage panel components
+              switch (stage) {
+                case "l1":
+                  return <L1Seed {...props} />;
+                case "l2":
+                  return <L2Promise {...props} />;
+                case "l3":
+                  return <L3ShortStory {...props} onGenerate={handleGenerate} />;
+                case "l4":
+                  return <L4Novella />;
+                case "l5":
+                  return <L5Novel />;
+                case "l6":
+                  return <L6Chapters {...props} />;
+                default:
+                  return (
+                    <div style={{ padding: "40px", textAlign: "center", color: COLOR.muted }}>
+                      Unknown stage: {stage}
+                    </div>
+                  );
+              }
+            }}
+          />
+        )}
+
+        {viewMode === "stageflow" && !storageAdapter && (
+          <div style={{ padding: "40px", textAlign: "center", color: COLOR.red }}>
+            <p>⚠ Storage adapter initialization failed</p>
+            <p style={{ fontSize: "12px", color: COLOR.muted }}>
+              StageFlow mode requires a valid storage adapter. Check console for errors.
+            </p>
+          </div>
         )}
 
         {error && (

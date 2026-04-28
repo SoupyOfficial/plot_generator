@@ -38,7 +38,7 @@ When this epic ships, users will work through six staged levels: L1 Seed (one pa
    - Test suite runs against both memory and `:memory:` libsql
    - `.env.example` with Turso credentials
 
-2. **UI consolidation to StageFlow** — [plan](./staged-story-escalation/stageflow-shell.md) — status: not-started
+2. **UI consolidation to StageFlow** — [plan](./staged-story-escalation/stageflow-shell.md) — status: draft
    - Single-page shell: project picker bar (top), stage rail (left), main panel (center), inspection drawer (bottom)
    - Full project CRUD UI: list / create / rename / delete / duplicate
    - Stage rail shows status dots: `fresh` | `stale` | `locked`
